@@ -281,6 +281,7 @@ const footer = () => `<div class="footer">Trevor's Academy · study notes built 
 // ============================================================ router
 function route() {
   cleanups.forEach(f => { try { f(); } catch { } }); cleanups = [];
+  closeTutor();
   narrator.stop();
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   const c = parts[0] && courseById(parts[0]);
@@ -517,6 +518,7 @@ function viewLesson(c, lid, startAt) {
         <button class="icon-btn ${settings.autoAdvance ? 'on' : ''}" id="aa" title="Auto-advance after narration" aria-label="Auto-advance">${icon('bolt')}</button>
         <button class="icon-btn ${settings.transcript ? 'on' : ''}" id="tr" title="Transcript (T)" aria-label="Transcript">${icon('cc')}</button>
         <button class="icon-btn" id="fs" title="Fullscreen (F)" aria-label="Fullscreen">${icon('expand')}</button>
+        ${tutorOn() ? `<button class="btn secondary sm" id="ask" title="Ask the tutor about this slide">${icon('bulb')} Ask</button>` : ''}
       </div>
       <div class="transcript ${settings.transcript ? '' : 'hidden'}" id="trbox"><div class="lbl">Narration</div><div id="trtext"></div></div>
       <div class="voice-note">${hasEleven && settings.voiceMode !== 'browser' ? `${icon('vol')} Narrated by ${esc(c.voice || 'ElevenLabs')}` : `${icon('vol')} Using your browser's voice${hasEleven ? '' : ' (studio narration coming soon)'} · change voice in ${icon('gear')} settings`} <span class="kbd"> · ← → to move · space to play/pause</span></div>
@@ -587,6 +589,7 @@ function viewLesson(c, lid, startAt) {
   }
   pp.onclick = () => { if (ended) { i = 0; rev = 0; render(); } playing ? pause() : (narrator.paused && narrator.mode ? (playing = true, setPlayIcon(), narrator.resume()) : play()); };
   $('#pv').onclick = () => go(-1); $('#nx').onclick = () => go(1);
+  if ($('#ask')) $('#ask').onclick = () => { const s = l.slides[i]; if (playing) pause(); openTutor(c, u, { kind: 'slide', label: plain(s.title), text: `Slide "${plain(s.title)}": ${plain(s.html)} ${(s.steps || []).map(plain).join(' ')} ${s.examTip ? 'Exam tip: ' + plain(s.examTip) : ''}\nNarration: ${s.narration || ''}` }); };
   $('#dots').onclick = e => { const k = e.target.dataset.k; if (k != null) { narrator.stop(); i = +k; rev = 0; render(); if (playing) play(); } };
   $('#outline').onclick = e => { const a = e.target.closest('a[data-k]'); if (a) { e.preventDefault(); narrator.stop(); i = +a.dataset.k; rev = 0; render(); if (playing) play(); } };
   $('#rate').onchange = e => { settings.rate = +e.target.value; saveSettings(); narrator.setRate(settings.rate); };
@@ -711,7 +714,7 @@ const answeredAuto = (q, r) => q.type === 'open' ? true : q.type === 'group' ? q
 
 /* QuestionView: renders one question with its interactions.
    mode: 'practice' (check/hints/solution, retries) | 'exam' (just inputs) | 'review' (read-only + solution + self-grade) */
-function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGrade, label } = {}) {
+function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGrade, label, tutorCtx } = {}) {
   const root = document.createElement('div'); root.className = 'card qcard';
   const st = { r: resp !== undefined && resp !== null ? structuredClone(resp) : initResp(q), checked: mode === 'review', hints: 0, sol: mode === 'review', tries: 0, wrong: {}, first: null, done: false, phints: {}, psol: {}, reasons: {} };
   function getAt(path) { let o = st.r; for (const k of path) o = o == null ? null : o[k]; return o; }
@@ -787,9 +790,10 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
           ${!showOpenOnly && !st.done && gradeAuto(q, initResp(q)) !== null ? `<button class="btn" data-act="check">${icon('check')} Check</button>` : ''}
           ${(q.hints || []).length > st.hints && !st.done && !st.sol ? `<button class="btn secondary" data-act="hint">${icon('bulb')} Get a hint</button>` : ''}
           ${!st.sol && !showOpenOnly ? (st.tries > 0 || st.done || ((q.hints || []).length && st.hints >= q.hints.length) ? `<button class="btn ghost" data-act="sol">${icon('eye')} Show solution</button>` : `<span class="small muted">Solution unlocks after your first try</span>`) : ''}
-          <span class="spacer"></span><span id="qnext"></span>
+          <span class="spacer"></span>${tutorCtx && tutorOn() ? `<button class="btn ghost" data-act="ask">${icon('bulb')} Ask tutor</button>` : ''}<span id="qnext"></span>
         </div>` : ''}
       ${mode === 'review' && q.solution && !showOpenOnly ? `<div class="solbox"><div class="lbl">Worked solution</div>${rich(q.solution)}</div>` : ''}
+      ${mode === 'review' && tutorCtx && tutorOn() ? `<div class="qactions"><button class="btn ghost sm" data-act="ask">${icon('bulb')} Ask the tutor about this question</button></div>` : ''}
       ${mode === 'review' && q.type === 'tfgroup' && q.solution ? '' : ''}`;
     if (root._afterRender) root._afterRender();
   }
@@ -824,6 +828,11 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
     else if (act === 'psol') { st.psol[b.dataset.path] = true; render(); }
     else if (act === 'self') { const o = getAt(path) || { text: '', self: null }; o.self = +b.dataset.v; o.revealed = true; setAt(path, o); emit(); render(); onSelfGrade && onSelfGrade(structuredClone(st.r)); if (mode === 'practice') finishIfDone(); }
     else if (act === 'hint') { st.hints++; render(); }
+    else if (act === 'ask' && tutorCtx) {
+      const qText = q => [plain(q.prompt), ...(q.choices || []).map((ch, k) => `${LETTERS[k]}. ${plain(ch)}`), ...(q.statements || []).map((x, k) => `(${k + 1}) ${plain(x.text)}`), ...(q.parts || []).map((p, k) => `Part ${String.fromCharCode(97 + k)}: ` + qText(p))].join('\n');
+      const attempted = st.tries > 0 || st.sol || st.done || mode === 'review';
+      openTutor(tutorCtx.c, tutorCtx.u, { kind: 'question', attempted, label: q.number || label || 'this question', text: qText(q) + (attempted ? `\nOfficial solution: ${plain(q.solution || q.modelAnswer || '')}` : '') });
+    }
     else if (act === 'sol') {
       st.sol = true; st.checked = true;
       if (!st.done) { st.done = true; const g = grade(q, st.r) || 0; onChecked && onChecked({ first: st.first === true, solved: g >= 0.99, score: g, revealed: true }); }
@@ -906,8 +915,9 @@ function viewPractice(c, kind, id, all = false) {
   }
   function show() {
     const q = qs[idx];
+    const owner = u || c.units.find(x => [...x.lessons.flatMap(y => y.practice || []), ...(x.unitQuiz || [])].some(z => z.id === q.id)) || lessonForQuestion(c, q).u;
     const v = QuestionView(q, {
-      mode: 'practice', label: `Question ${idx + 1} of ${qs.length}`,
+      mode: 'practice', label: `Question ${idx + 1} of ${qs.length}`, tutorCtx: owner ? { c, u: owner } : null,
       onChecked: ({ first, solved, score }) => {
         if (results[idx] == null) {
           results[idx] = first ? 1 : 0;
@@ -1146,7 +1156,7 @@ function examResults(c, e, sess) {
     const head = document.createElement('div'); head.className = 'rhead';
     head.innerHTML = `<b>Q${k + 1}</b>${g == null ? '<span class="chip warn">Self-grade</span>' : g >= 0.99 ? '<span class="chip good">Correct</span>' : g > 0 ? `<span class="chip warn">Partial ${pct(g)}%</span>` : '<span class="chip bad">Missed</span>'}<span class="pts">${Math.round((g || 0) * (q.points || 10) * 10) / 10}/${q.points || 10}</span>`;
     const v = QuestionView(q, {
-      mode: 'review', resp: sess.resp[q.id] ?? initResp(q),
+      mode: 'review', resp: sess.resp[q.id] ?? initResp(q), tutorCtx: lessonForQuestion(c, q).u ? { c, u: lessonForQuestion(c, q).u } : null,
       onSelfGrade: r => { sess.resp[q.id] = r; store.set(examKey(c, e.id), sess); recordAttempt(c, e, sess); const ns = scoreExam(e, sess); $('#bigscore').textContent = ns.pct + '%'; $('#ptsline').innerHTML = `${ns.score} / ${ns.max} points${ns.pending ? ` · <b>${ns.pending}</b> to self-grade` : ''}`; },
     });
     v.prepend(head);
@@ -1210,6 +1220,117 @@ function viewCheatsheet(c) {
     <div class="cheatsheet" id="cs" style="--cs-size:${size}pt"><div class="cs-name-line">Name: ________________________ · ${esc(c.code)} ${esc(c.title)}</div>${secs}</div>${footer()}</div>`);
   $('#csz').oninput = ev => { const v = +ev.target.value; $('#cs').style.setProperty('--cs-size', v + 'pt'); $('#cszv').textContent = v + 'pt'; store.set('cs-size:' + c.id, v); };
   $('#pr').onclick = () => window.print();
+}
+
+
+// ============================================================ AI tutor (Claude via the Anthropic JS SDK)
+const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.129.0/+esm';
+let sdkPromise = null, tutorClient = null;
+const tutorOn = () => !!(DATA && DATA.tutor && DATA.tutor.key);
+async function getTutorClient() {
+  if (tutorClient) return tutorClient;
+  sdkPromise = sdkPromise || import(SDK_URL);
+  const mod = await sdkPromise; const Anthropic = mod.default || mod.Anthropic;
+  tutorClient = new Anthropic({ apiKey: DATA.tutor.key, dangerouslyAllowBrowser: true });
+  return tutorClient;
+}
+const unitCtxCache = {};
+function unitContext(c, u) {
+  const k = c.id + ':' + u.id; if (unitCtxCache[k]) return unitCtxCache[k];
+  const lines = [`UNIT ${u.num}: ${u.title}`, u.tagline || '', 'Objectives: ' + (u.objectives || []).map(plain).join(' | ')];
+  u.lessons.forEach((l, li) => {
+    lines.push(`\n## Lesson ${li + 1}: ${l.title}`);
+    l.slides.forEach(sl => lines.push(`### ${plain(sl.title)}${sl.kicker ? ' [' + plain(sl.kicker) + ']' : ''}\n${plain(sl.html)}${(sl.steps || []).length ? '\nSteps: ' + sl.steps.map(plain).join(' → ') : ''}${sl.examTip ? '\nExam tip: ' + plain(sl.examTip) : ''}`));
+  });
+  if ((u.keyFormulas || []).length) lines.push('\n## Key formulas\n' + u.keyFormulas.map(f => `- ${plain(f.name)}: ${f.tex}${f.note ? ' (' + plain(f.note) + ')' : ''}`).join('\n'));
+  if ((u.keyFacts || []).length) lines.push('\n## Key facts\n' + u.keyFacts.map(f => '- ' + plain(f)).join('\n'));
+  return (unitCtxCache[k] = lines.join('\n'));
+}
+function tutorSystem(c, u) {
+  return `You are the tutor inside Trevor's Academy, a one-day cram course for ${c.code} ${c.title} (${c.school || ''}). The final exam is ${c.exam?.dates || 'soon'}; format: ${c.exam?.questions || ''}; ${c.exam?.rule || ''}.
+How to tutor:
+- Teach like a great TA the night before the exam: short, clear, exam-focused. Lead with the direct answer or next step, then the why. Usually under 180 words unless asked for more.
+- Use the course's own notation, conventions and wording from the material below${c.id === 'gfi' ? ' (this exam re-uses the professor\'s slide wording, so quote it when it matters)' : ''}. If something isn't covered in the material, say so and give the standard textbook view briefly.
+- Math in LaTeX with \\( ... \\) inline or \\[ ... \\] display (never $). Show calculations step by step with numbers.
+- If the student is asking about a practice question they have NOT attempted yet, do not give the final answer or the correct option: give a hint or the method, and invite them to try.
+- Plain formatting only: short paragraphs, "- " bullets, **bold** for key terms. No headings, no tables.
+
+COURSE MATERIAL FOR THIS UNIT (from the professors' slides, problem sets and the course's lessons):
+${unitContext(c, u)}`;
+}
+function mdLite(t) {
+  const out = []; let list = [];
+  const flush = () => { if (list.length) { out.push('<ul>' + list.map(x => `<li>${x}</li>`).join('') + '</ul>'); list = []; } };
+  const inline = x => esc(x).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  String(t).split(/\n/).forEach(line => {
+    const m = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (m) list.push(inline(m[1]));
+    else { flush(); if (line.trim()) out.push(`<p>${inline(line)}</p>`); }
+  });
+  flush(); return tex(out.join(''));
+}
+let tutorState = null;
+function closeTutor() { const d = $('#tutor'); if (d) d.remove(); if (tutorState) tutorState.abort?.abort(); tutorState = null; }
+function openTutor(c, u, focus) {
+  if (!tutorOn()) { toast('The tutor is not enabled on this site yet.'); return; }
+  if (!u) return;
+  if (!tutorState || tutorState.key !== c.id + ':' + u.id) tutorState = { key: c.id + ':' + u.id, msgs: [], focus: null };
+  tutorState.focus = focus;
+  let d = $('#tutor');
+  if (!d) {
+    d = document.createElement('aside'); d.id = 'tutor'; d.className = 'tutor'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Ask the tutor');
+    d.innerHTML = `<div class="tutor-head">${icon('bulb')}<b>Ask the tutor</b><span class="chip">${esc(u.title.slice(0, 34))}</span><span class="spacer"></span><button class="icon-btn" id="tclose" aria-label="Close">${icon('x')}</button></div>
+      <div class="tutor-focus" id="tfocus"></div><div class="tutor-log" id="tlog"></div>
+      <div class="tutor-sugg" id="tsugg"></div>
+      <form class="tutor-form" id="tform"><textarea class="field" id="tin" rows="2" placeholder="Ask anything about this…"></textarea><button class="btn" id="tsend">${icon('next')}</button></form>
+      <div class="tutor-foot">Claude (Sonnet 5.5) answers from this unit's material. It can make mistakes; check against the slides.</div>`;
+    document.body.appendChild(d);
+    $('#tclose').onclick = closeTutor;
+    $('#tform').onsubmit = ev => { ev.preventDefault(); const v = $('#tin').value.trim(); if (v) { $('#tin').value = ''; askTutor(c, u, v); } };
+    $('#tin').addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('#tform').requestSubmit(); } });
+  }
+  $('#tfocus').innerHTML = focus ? `<span class="muted small">Looking at:</span> <b>${esc(focus.label)}</b>` : '';
+  const sugg = focus && focus.kind === 'question'
+    ? (focus.attempted ? ['Why is my answer wrong?', 'Explain the solution step by step', 'Give me a similar practice problem'] : ['Give me a hint', 'What concept is this testing?', 'How should I start?'])
+    : ['Explain this more simply', 'Give me an example with numbers', 'How does the exam test this?', 'Quiz me on this'];
+  $('#tsugg').innerHTML = sugg.map(t => `<button class="btn ghost sm" data-q="${esc(t)}">${esc(t)}</button>`).join('');
+  $('#tsugg').onclick = ev => { const b = ev.target.closest('[data-q]'); if (b) askTutor(c, u, b.dataset.q); };
+  renderTutorLog();
+  setTimeout(() => $('#tin')?.focus(), 30);
+}
+function renderTutorLog() {
+  const log = $('#tlog'); if (!log || !tutorState) return;
+  log.innerHTML = tutorState.msgs.map(m => m.role === 'user' ? `<div class="tmsg u">${esc(m.shown || m.content)}</div>` : `<div class="tmsg a rich">${m.content ? mdLite(m.content) : '<span class="muted">Thinking…</span>'}</div>`).join('') || `<div class="muted small" style="padding:8px">Ask about the slide or question you're on, or anything in this unit.</div>`;
+  log.scrollTop = log.scrollHeight;
+}
+async function askTutor(c, u, text) {
+  const S = tutorState; if (!S || S.busy) return;
+  const f = S.focus;
+  const ctx = f ? `[The student is looking at ${f.kind === 'question' ? 'this practice question' : 'this slide'}]\n${f.text}\n${f.kind === 'question' ? (f.attempted ? '[They have already attempted it.]' : '[They have NOT attempted it yet: hints only, no final answer.]') : ''}\n\n` : '';
+  S.msgs.push({ role: 'user', content: ctx + text, shown: text });
+  const reply = { role: 'assistant', content: '' }; S.msgs.push(reply); S.busy = true; renderTutorLog();
+  $('#tsend') && ($('#tsend').disabled = true);
+  try {
+    const client = await getTutorClient();
+    S.abort = new AbortController();
+    const stream = client.beta.messages.stream({
+      model: DATA.tutor.model, max_tokens: 4000,
+      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+      output_config: { effort: 'low' },
+      system: [{ type: 'text', text: tutorSystem(c, u), cache_control: { type: 'ephemeral' } }],
+      messages: S.msgs.filter(m => m !== reply).map(m => ({ role: m.role, content: m.content })),
+    }, { signal: S.abort.signal });
+    for await (const ev of stream) {
+      if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') { reply.content += ev.delta.text; renderTutorLog(); }
+    }
+    const fin = await stream.finalMessage();
+    if (fin.stop_reason === 'refusal') reply.content = reply.content || "I can't help with that one. Try rephrasing it as a question about the course material.";
+    if (!reply.content) reply.content = 'Sorry, I came back empty. Try asking again.';
+  } catch (e) {
+    if (e.name === 'AbortError' || /abort/i.test(e.message || '')) return;
+    const st = e.status;
+    reply.content = st === 401 ? 'The tutor key was rejected (invalid or revoked).' : st === 429 ? 'The tutor is busy (rate or spend limit reached). Try again in a minute.' : st >= 500 ? 'Claude is temporarily unavailable. Try again shortly.' : 'Could not reach the tutor: ' + (e.message || 'network error');
+  } finally { S.busy = false; $('#tsend') && ($('#tsend').disabled = false); renderTutorLog(); }
 }
 
 // ============================================================ settings

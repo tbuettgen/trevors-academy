@@ -206,7 +206,7 @@ function renderEmailGate(msg = '') {
 const courseById = id => DATA.courses.find(c => c.id === id);
 const unitColor = u => u.color || PALETTE[((u.num || 1) - 1) % PALETTE.length];
 function allLessons(c) { return c.units.flatMap(u => u.lessons.map(l => ({ ...l, unit: u }))); }
-function findLesson(c, lid) { for (const u of c.units) { const l = u.lessons.find(x => x.id === lid); if (l) return { u, l }; } return {}; }
+function findLesson(c, lid) { for (const u of (c.cram ? [...c.units, c.cram] : c.units)) { const l = u.lessons.find(x => x.id === lid); if (l) return { u, l }; } return {}; }
 function walkQ(q, fn) { fn(q); (q.parts || []).forEach(p => walkQ(p, fn)); }
 function allQuestions(c) {
   const out = [];
@@ -324,6 +324,7 @@ function sideNav(c, activeUnit) {
   return `<aside class="side"><h4>${esc(c.code)} · Units</h4>
     <a class="item ${!activeUnit ? 'active' : ''}" href="#/${c.id}"><span class="num" style="background:var(--brand)">${icon('home')}</span>Course overview</a>
     ${c.units.map(u => `<a class="item ${activeUnit === u.id ? 'active' : ''}" href="#/${c.id}/unit/${u.id}"><span class="num" style="background:${unitColor(u)}">${u.num}</span><span style="flex:1">${esc(u.title)}</span><span class="ring" style="--p:${pct(unitMastery(c.id, u))};width:26px;height:26px"><span></span></span></a>`).join('')}
+    ${c.cram ? `<a class="item ${activeUnit === 'cram' ? 'active' : ''}" href="#/${c.id}/cram"><span class="num" style="background:var(--bad)">${icon('bolt')}</span>30-minute cram</a>` : ''}
     <h4>Test yourself</h4>
     <a class="item" href="#/${c.id}/exams"><span class="num" style="background:var(--accent4)">${icon('clock')}</span>Practice exams</a>
     <a class="item" href="#/${c.id}/review"><span class="num" style="background:var(--bad)">${icon('redo')}</span>Review my mistakes</a>
@@ -346,6 +347,7 @@ function route() {
   switch (kind) {
     case undefined: return viewCourse(c);
     case 'unit': return viewUnit(c, id);
+    case 'cram': return c.cram ? viewUnit(c, 'cram') : viewCourse(c);
     case 'learn': return viewLesson(c, id, parts[3]);
     case 'practice': return viewPractice(c, parts[3] === 'testout' ? 'testout' : 'lesson', id, parts[3] === 'all');
     case 'mixed': return viewPractice(c, 'mixed', id);
@@ -369,7 +371,7 @@ function viewHome() {
       <div class="code">${esc(c.code)}</div><h3>${esc(c.title)}</h3><div class="muted small">${esc(c.subtitle || '')}</div>
       <p class="muted" style="margin-top:6px">${esc(c.description)}</p>
       <div class="row" style="margin-top:4px"><div class="bar" style="flex:1"><i style="width:${pct(m)}%"></i></div><b class="small">${pct(m)}%</b></div>
-      <div class="stats"><span class="chip core">${c.units.length} units</span><span class="chip">${slideCount(c)} slides</span><span class="chip">${qCount(c)} practice Qs</span><span class="chip high">${c.exams.length} exams</span><span class="chip">≈ ${fmtMin(courseMinutes(c))} core</span></div>
+      <div class="stats"><span class="chip core">${c.units.length} units</span><span class="chip">${slideCount(c)} slides</span><span class="chip">${qCount(c)} practice Qs</span><span class="chip high">${c.exams.length} exams</span><span class="chip">≈ ${fmtMin(courseMinutes(c))} core</span>${c.cram ? '<span class="chip bad">30-min cram</span>' : ''}</div>
       <div class="row" style="margin-top:10px"><span class="btn sm">${m > 0 ? 'Continue' : 'Start'}: ${esc(nx.label)}</span></div>
     </div></a>`;
   }).join('');
@@ -420,6 +422,10 @@ function viewCourse(c) {
       <div class="playbtn">${icon(nx.kind === 'learn' ? 'play' : nx.kind === 'exam' ? 'clock' : 'target')}</div>
       <div style="flex:1"><div class="lbl">Up next · ${esc(nx.label)}</div><h3>${esc(nx.title)}</h3>${nx.u ? `<div class="muted small">Unit ${nx.u.num}: ${esc(nx.u.title)}</div>` : ''}</div>
       <span class="btn">${m > 0 ? 'Continue' : 'Start'} ${icon('next')}</span></a>
+    ${c.cram ? `<a class="upnext cram" href="#/${c.id}/cram" style="text-decoration:none;color:inherit;margin-top:12px">
+      <div class="playbtn" style="background:var(--bad)">${icon('bolt')}</div>
+      <div style="flex:1"><div class="lbl" style="color:var(--bad)">Short on time?</div><h3>30-minute cram: everything for the final</h3><div class="muted small">${sum(c.cram.lessons.map(l => l.slides.length))} narrated slides in ${c.cram.lessons.length} parts · auto-plays like a podcast · quick checks after each part</div></div>
+      <span class="btn" style="background:var(--bad)">${icon('play')} Cram</span></a>` : ''}
     <div style="height:16px"></div>
     <div class="stat-tiles">
       <div class="tile"><div class="v">${seenSlides}/${slideCount(c)}</div><div class="k">slides watched</div></div>
@@ -437,8 +443,11 @@ function viewCourse(c) {
 }
 
 // ============================================================ unit page
+const isCram = u => u && u.id === 'cram';
+const unitLabel = u => isCram(u) ? '30-min cram' : `Unit ${u.num}`;
+const unitHref = (c, u) => isCram(u) ? `#/${c.id}/cram` : `#/${c.id}/unit/${u.id}`;
 function viewUnit(c, uid) {
-  const u = c.units.find(x => x.id === uid); if (!u) return viewCourse(c);
+  const u = uid === 'cram' ? c.cram : c.units.find(x => x.id === uid); if (!u) return viewCourse(c);
   const col = unitColor(u), idx = c.units.indexOf(u), prevU = c.units[idx - 1], nextU = c.units[idx + 1];
   const lessons = u.lessons.map((l, i) => {
     const seen = lessonSeenFrac(c.id, l), pf = lessonPracticeFrac(c.id, l), done = seen >= 1 && coreQs(l).every(q => qScore(c.id, q.id) != null);
@@ -452,9 +461,9 @@ function viewUnit(c, uid) {
         ${seen === 0 && nc ? `<a class="btn ghost" href="#/${c.id}/practice/${l.id}/testout" title="Already know this? Answer the ${nc} quick-check questions first. All right = lesson marked done.">${icon('bolt')} Test out</a>` : ''}</div></div>`;
   }).join('');
   const qz = (u.unitQuiz || []).length, best = P(c.id).quiz[u.id];
-  shell(c, [[c.code, `#/${c.id}`], [`Unit ${u.num}`]], `<div class="page"><div class="with-side">${sideNav(c, u.id)}<div>
+  shell(c, [[c.code, `#/${c.id}`], [unitLabel(u)]], `<div class="page"><div class="with-side">${sideNav(c, u.id)}<div>
     <section class="unit-head" style="background:linear-gradient(135deg, ${col}, color-mix(in srgb, ${col} 55%, #041e42))">
-      <div class="kick">Unit ${u.num} of ${c.units.length}</div><h1>${esc(u.title)}</h1><p>${esc(u.tagline || '')}</p>
+      <div class="kick">${isCram(u) ? 'Short on time? The whole course in ~30 minutes' : `Unit ${u.num} of ${c.units.length}`}</div><h1>${esc(u.title)}</h1><p>${esc(u.tagline || '')}</p>
       <div class="chips"><span class="chip">${icon('clock')} ~${fmtMin(unitMinutes(u))} core · ${fmtMin(unitAllMinutes(u))} with everything</span><span class="chip">${u.lessons.length} lessons</span><span class="chip">${pct(unitMastery(c.id, u))}% mastered</span>${(u.sources || []).length ? `<span class="chip">From: ${esc(u.sources.slice(0, 3).join(' · '))}</span>` : ''}</div>
     </section>
     ${(u.objectives || []).length ? `<div class="card pad" style="margin-top:16px"><h3>By the end of this unit you can…</h3><ul class="objectives">${u.objectives.map(o => `<li>${tex(o)}</li>`).join('')}</ul></div>` : ''}
@@ -540,7 +549,7 @@ function slideHTML(c, u, s, revealed) {
     ${s.kicker ? `<div class="kicker">${tex(esc(s.kicker))}</div>` : ''}<h2 class="st">${tex(s.title || '')}</h2>
     <div class="sbody">${inner}</div>
     ${s.examTip ? `<div class="exam-tip">${icon('target')}<span><b>Exam tip:</b> ${tex(s.examTip)}</span></div>` : ''}
-    <div class="watermark">Trevor's Academy · ${esc(c.code)} · Unit ${u.num}</div></div>`;
+    <div class="watermark">Trevor's Academy · ${esc(c.code)} · ${unitLabel(u)}</div></div>`;
 }
 function fitSlide(stage) {
   const sl = $('.slide', stage); if (!sl || matchMedia('(max-width: 760px)').matches) return;
@@ -551,15 +560,15 @@ function fitSlide(stage) {
 }
 function viewLesson(c, lid, startAt) {
   const { u, l } = findLesson(c, lid); if (!l) return viewCourse(c);
-  const lessons = allLessons(c), li = lessons.findIndex(x => x.id === lid), nextL = lessons[li + 1];
+  const lessons = isCram(u) ? u.lessons.map(x => ({ ...x, unit: u })) : allLessons(c), li = lessons.findIndex(x => x.id === lid), nextL = lessons[li + 1];
   const seen = P(c.id).seen[l.id] || [];
   let i = startAt != null ? Math.max(0, Math.min(l.slides.length - 1, +startAt - 1)) : Math.max(0, l.slides.findIndex(s => !seen.includes(s.id)));
   if (i < 0) i = 0;
   let rev = 0, playing = false, ended = false;
   const nq = (l.practice || []).length;
   const hasEleven = l.slides.some(s => c.audio && c.audio[s.id]);
-  shell(c, [[c.code, `#/${c.id}`], [`Unit ${u.num}`, `#/${c.id}/unit/${u.id}`], [l.title]], `<div class="page">
-    <div class="row" style="margin-bottom:14px"><div><div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:${unitColor(u)}">Unit ${u.num} · Lesson ${u.lessons.indexOf(l) + 1} of ${u.lessons.length}</div><h1 style="margin:.15em 0 0;font-size:1.5rem">${esc(l.title)}</h1></div></div>
+  shell(c, [[c.code, `#/${c.id}`], [unitLabel(u), unitHref(c, u)], [l.title]], `<div class="page">
+    <div class="row" style="margin-bottom:14px"><div><div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:${unitColor(u)}">${isCram(u) ? '30-min cram · Part' : `Unit ${u.num} · Lesson`} ${u.lessons.indexOf(l) + 1} of ${u.lessons.length}</div><h1 style="margin:.15em 0 0;font-size:1.5rem">${esc(l.title)}</h1></div></div>
     <div class="player"><div>
       <div class="stage-wrap"><div class="stage" id="stage"></div></div>
       <div class="controls">
@@ -929,8 +938,8 @@ function viewPractice(c, kind, id, all = false) {
   let qs = [], title = '', back = `#/${c.id}`, u = null, l = null, sub = '';
   if (kind === 'testout') {
     ({ u, l } = findLesson(c, id)); if (!l) return viewCourse(c);
-    qs = coreQs(l).slice(); title = `Test out: ${l.title}`; back = `#/${c.id}/unit/${u.id}`;
-    sub = `Unit ${u.num} · get all ${qs.length} right on the first try to skip this lesson`;
+    qs = coreQs(l).slice(); title = `Test out: ${l.title}`; back = unitHref(c, u);
+    sub = `${unitLabel(u)} · get all ${qs.length} right on the first try to skip this lesson`;
   } else if (kind === 'mixed') {
     const cp = checkpointsFor(c).find(x => String(x.upto) === String(id)) || checkpointsFor(c).slice(-1)[0];
     qs = sampleWeighted(mixedPool(c, cp.upto), cp.n); title = cp.title; sub = 'Interleaved retrieval practice · weighted toward what you missed or haven\'t tried';
@@ -939,8 +948,8 @@ function viewPractice(c, kind, id, all = false) {
     ({ u, l } = findLesson(c, id)); if (!l) return viewCourse(c);
     const full = (l.practice || []).slice(), core = coreQs(l);
     qs = all || full.length <= core.length ? full : core;
-    title = qs === full ? `Practice: ${l.title}` : `Quick check: ${l.title}`; back = `#/${c.id}/unit/${u.id}`;
-    sub = `Unit ${u.num} · Lesson ${u.lessons.indexOf(l) + 1}` + (qs === core ? ` · ${core.length} of ${full.length} questions` : '');
+    title = qs === full ? `Practice: ${l.title}` : `Quick check: ${l.title}`; back = unitHref(c, u);
+    sub = `${unitLabel(u)} · ${isCram(u) ? 'Part' : 'Lesson'} ${u.lessons.indexOf(l) + 1}` + (qs === core ? ` · ${core.length} of ${full.length} questions` : '');
   } else if (kind === 'quiz') {
     u = c.units.find(x => x.id === id); if (!u) return viewCourse(c);
     qs = (u.unitQuiz || []).slice(); title = `Unit ${u.num} quiz: ${u.title}`; back = `#/${c.id}/unit/${u.id}`; sub = 'Exam-style questions';
@@ -953,7 +962,7 @@ function viewPractice(c, kind, id, all = false) {
     qs = all.slice(0, 12);
     title = 'Review my mistakes'; sub = `${qs.length} of ${all.length} missed questions this round · exam misses first · a question leaves the list once you get it right first try`;
   }
-  const crumbsArr = [[c.code, `#/${c.id}`], u ? [`Unit ${u.num}`, `#/${c.id}/unit/${u.id}`] : null, [kind === 'quiz' ? 'Quiz' : kind === 'review' ? 'Mistakes' : kind === 'mixed' ? 'Mixed review' : kind === 'testout' ? 'Test out' : 'Practice']];
+  const crumbsArr = [[c.code, `#/${c.id}`], u ? [unitLabel(u), unitHref(c, u)] : null, [kind === 'quiz' ? 'Quiz' : kind === 'review' ? 'Mistakes' : kind === 'mixed' ? 'Mixed review' : kind === 'testout' ? 'Test out' : 'Practice']];
   if (!qs.length) {
     shell(c, crumbsArr, `<div class="page narrow"><div class="card pad empty"><h2>${kind === 'review' ? 'No mistakes yet 🎯' : 'No questions here'}</h2><p>${kind === 'review' ? 'Questions you miss on the first try will collect here so you can drill them before the exam.' : ''}</p><a class="btn" href="${back}">Back</a></div></div>`);
     return;
@@ -997,7 +1006,7 @@ function viewPractice(c, kind, id, all = false) {
     if (kind === 'mixed') { const p = P(c.id); p.checkpoints = p.checkpoints || {}; p.checkpoints[id] = score; saveP(c.id); }
     let testedOut = false;
     if (kind === 'testout' && right === qs.length) { l.slides.forEach(s => markSeen(c.id, l.id, s.id)); testedOut = true; }
-    const lessons = allLessons(c), li = l ? lessons.findIndex(x => x.id === l.id) : -1, nextL = li >= 0 ? lessons[li + 1] : null;
+    const lessons = u && isCram(u) ? u.lessons.map(x => ({ ...x, unit: u })) : allLessons(c), li = l ? lessons.findIndex(x => x.id === l.id) : -1, nextL = li >= 0 ? lessons[li + 1] : null;
     const unitIdx = u ? c.units.indexOf(u) : -1, nextU = unitIdx >= 0 ? c.units[unitIdx + 1] : null;
     $('#view').innerHTML = `<div class="page narrow"><div class="card summary-hero">
       <div style="font-size:2.4rem">${score >= 0.8 ? '🏆' : score >= 0.5 ? '💪' : '📚'}</div>

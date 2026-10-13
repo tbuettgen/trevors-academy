@@ -95,17 +95,61 @@ async function gunzip(buf) {
   const ds = new DecompressionStream('gzip');
   return new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
 }
+// network failures surface as Error('fetch') so a dropped connection never clears the remembered key
+const getBuf = url => fetch(url).then(r => r.ok ? r.arrayBuffer() : null).catch(() => { throw new Error('fetch'); });
+const getMeta = () => fetch('data/meta.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json());
+async function loadBundle(key, meta) {
+  // bundle-<version>.bin is a new URL per deploy, so GitHub Pages' CDN (which ignores ?v=) can't hand back an older bundle
+  const buf = await getBuf(`data/bundle-${meta.version}.bin`) || await getBuf('data/bundle.bin?v=' + meta.version);
+  if (!buf) throw new Error('fetch');
+  const plainBuf = await decryptBuf(key, buf); // throws on wrong password (GCM auth)
+  return JSON.parse(new TextDecoder().decode(await gunzip(plainBuf)));
+}
 async function unlock(raw) {
   const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
-  const buf = await fetch('data/bundle.bin?v=' + META.version).then(r => { if (!r.ok) throw new Error('fetch'); return r.arrayBuffer(); });
-  const plainBuf = await decryptBuf(key, buf); // throws on wrong password (GCM auth)
-  DATA = JSON.parse(new TextDecoder().decode(await gunzip(plainBuf)));
+  DATA = await loadBundle(key, META);
   KEY = key; RAW = raw;
 }
 
+// ---- new deploys reach open tabs: a tab can stay open for days and the CDN caches meta.json for ~10 minutes,
+// so look for a newer version when the tab comes back, every few minutes, and whenever an encrypted file fails to load
+let updating = null, lastCheck = Date.now(), badVersion = null;
+function checkForUpdate(force) {
+  if (!KEY) return Promise.resolve(false);
+  if (updating) return updating;
+  if (!force && Date.now() - lastCheck < 60000) return Promise.resolve(false);
+  lastCheck = Date.now();
+  updating = (async () => {
+    try {
+      const m = await getMeta();
+      if (!m || m.version === META.version || m.version === badVersion) return false;
+      if (m.built && META.built && m.built < META.built) return false; // a CDN edge still serving an older deploy
+      try { DATA = await loadBundle(KEY, m); META = m; return true; }
+      catch (e) {
+        if (e && e.message === 'fetch') return false; // offline: try again next time
+        // the new bundle doesn't open with this key, so the password changed: reload once to reach the login screen
+        // (once per version, in case a CDN edge hands the reloaded page the previous meta.json)
+        badVersion = m.version;
+        let seen = null; try { seen = sessionStorage.getItem('ta:pwchange'); sessionStorage.setItem('ta:pwchange', m.version); } catch { }
+        if (seen !== m.version) location.reload();
+        return false;
+      }
+    } catch { return false; } finally { updating = null; }
+  })();
+  return updating;
+}
+// pages that show bundle content without in-progress state are redrawn at once; lessons, practice and exams pick up
+// the new content on the next navigation
+function refreshIfIdle() {
+  const kind = location.hash.replace(/^#\/?/, '').split('/')[1];
+  if (kind === 'cheatsheet' && !$('#tutor')) route();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate().then(u => u && refreshIfIdle()); });
+setInterval(() => { if (document.visibilityState === 'visible') checkForUpdate().then(u => u && refreshIfIdle()); }, 5 * 60000);
+
 async function boot() {
   applyTheme();
-  try { META = await fetch('data/meta.json', { cache: 'no-cache' }).then(r => r.json()); }
+  try { META = await getMeta(); }
   catch { app.innerHTML = `<div class="boot"><p class="muted">Couldn't load the site data. Check your connection and refresh.</p></div>`; return; }
   const saved = store.get('key');
   if (saved && saved.salt === META.salt) {
@@ -508,7 +552,7 @@ class Narrator {
   async start(c, s, { onProgress, onEnd }) {
     this.stop(); const tok = ++this.tok; this.onProgress = onProgress; this.onEnd = onEnd; this.playing = true;
     let u = null;
-    if (this.useAudio(c, s)) { try { u = await this.url(c, s.id); } catch { u = null; } }
+    if (this.useAudio(c, s)) { try { u = await this.url(c, s.id); } catch { u = null; checkForUpdate(true); } } // browser voice this slide; newer audio from the next page on
     if (tok !== this.tok) return;
     if (u) {
       this.mode = 'audio'; const a = this.audio; a.src = u; a.playbackRate = settings.rate;
@@ -567,6 +611,7 @@ function viewLesson(c, lid, startAt) {
   let rev = 0, playing = false, ended = false;
   const nq = (l.practice || []).length;
   const hasEleven = l.slides.some(s => c.audio && c.audio[s.id]);
+  const voiced = l.slides.find(s => c.audio && c.audio[s.id]), voiceName = (voiced && c.voices && c.voices[voiced.id]) || c.voice || 'ElevenLabs';
   shell(c, [[c.code, `#/${c.id}`], [unitLabel(u), unitHref(c, u)], [l.title]], `<div class="page">
     <div class="row" style="margin-bottom:14px"><div><div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:${unitColor(u)}">${isCram(u) ? '30-min cram · Part' : `Unit ${u.num} · Lesson`} ${u.lessons.indexOf(l) + 1} of ${u.lessons.length}</div><h1 style="margin:.15em 0 0;font-size:1.5rem">${esc(l.title)}</h1></div></div>
     <div class="player"><div>
@@ -584,7 +629,7 @@ function viewLesson(c, lid, startAt) {
         ${tutorOn() ? `<button class="btn secondary sm" id="ask" title="Ask the tutor about this slide">${icon('bulb')} Ask</button>` : ''}
       </div>
       <div class="transcript ${settings.transcript ? '' : 'hidden'}" id="trbox"><div class="lbl">Narration</div><div id="trtext"></div></div>
-      <div class="voice-note">${hasEleven && settings.voiceMode !== 'browser' ? `${icon('vol')} Narrated by ${esc(c.voice || 'ElevenLabs')}` : `${icon('vol')} Using your browser's voice${hasEleven ? '' : ' (studio narration coming soon)'} · change voice in ${icon('gear')} settings`} <span class="kbd"> · ← → to move · space to play/pause</span></div>
+      <div class="voice-note">${hasEleven && settings.voiceMode !== 'browser' ? `${icon('vol')} Narrated by ${esc(voiceName)}` : `${icon('vol')} Using your browser's voice${hasEleven ? '' : ' (studio narration coming soon)'} · change voice in ${icon('gear')} settings`} <span class="kbd"> · ← → to move · space to play/pause</span></div>
     </div>
     <div class="card outline" id="outline"><div class="muted small" style="font-weight:800;padding:6px 10px">In this lesson</div>${l.slides.map((s, k) => `<a href="#" data-k="${k}"><span class="n">${k + 1}</span><span>${tex(s.title)}</span></a>`).join('')}
       <div style="padding:10px">${nq ? `<a class="btn good" style="width:100%" href="#/${c.id}/practice/${l.id}">${icon('target')} Quick check (${coreQs(l).length})</a>` : ''}</div></div>
@@ -1264,13 +1309,20 @@ function viewSheet(c) {
     <div class="sheet-pages" id="sp">${sh.pages.map((_, i) => `<figure class="sheet-page ${sh.orientation}"><div class="spinner"></div><figcaption>Side ${i + 1} of ${sh.pages.length}</figcaption></figure>`).join('')}</div>
     <p class="small muted" style="margin-top:12px">Tip: click a page to open it full size. The PDF prints at exactly two pages on US Letter; choose "Actual size" (not "Fit") in the print dialog.</p>
     ${footer()}</div>`);
+  // a file that won't load usually means a newer sheet was deployed after this tab loaded: fetch it and redraw
+  let healing = null;
+  const heal = () => (healing ||= checkForUpdate(true).then(u => { if (u && location.hash === `#/${c.id}/cheatsheet`) route(); return u; }));
   sh.pages.forEach((h, i) => fileUrl(h, 'image/png').then(u => {
     const fig = $$('#sp figure')[i]; if (!fig) return;
     fig.innerHTML = `<a href="${u}" target="_blank" rel="noopener"><img alt="${esc(label)} side ${i + 1}" src="${u}"></a><figcaption>Side ${i + 1} of ${sh.pages.length}</figcaption>`;
-  }).catch(() => toast('Could not load the sheet image')));
+  }).catch(() => heal().then(u => {
+    const fig = $$('#sp figure')[i];
+    if (!u && fig) fig.innerHTML = `<p class="muted small" style="padding:24px">Couldn't load side ${i + 1}. Check your connection and refresh the page.</p><figcaption>Side ${i + 1} of ${sh.pages.length}</figcaption>`;
+  })));
   const getPdf = () => fileUrl(sh.pdf, 'application/pdf');
-  $('#dl').onclick = () => getPdf().then(u => { const a = document.createElement('a'); a.href = u; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); }).catch(() => toast('Download failed'));
-  $('#op').onclick = () => getPdf().then(u => window.open(u, '_blank', 'noopener')).catch(() => toast('Could not open the PDF'));
+  const pdfFailed = msg => heal().then(u => toast(u ? 'The sheet was just updated. Try again.' : msg));
+  $('#dl').onclick = () => getPdf().then(u => { const a = document.createElement('a'); a.href = u; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); }).catch(() => pdfFailed('Download failed'));
+  $('#op').onclick = () => getPdf().then(u => window.open(u, '_blank', 'noopener')).catch(() => pdfFailed('Could not open the PDF'));
 }
 function viewCheatsheet(c) {
   if (c.sheet && (c.sheet.pages || []).length) return viewSheet(c);

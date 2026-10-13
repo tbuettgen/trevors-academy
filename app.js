@@ -431,7 +431,7 @@ class Narrator {
   stop() { this.tok++; this.playing = false; this.paused = false; try { this.audio.pause(); } catch { } this.audio.ontimeupdate = this.audio.onended = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
 }
 const narrator = new Narrator();
-window.__ta = { narrator, get data() { return DATA; }, fitSlide, slideHTML }; // debug hooks for QA
+window.__ta = { narrator, get data() { return DATA; }, fitSlide, slideHTML, route: () => route() }; // debug hooks for QA
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { };
 
 // ============================================================ lesson player

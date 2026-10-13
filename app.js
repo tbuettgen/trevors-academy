@@ -20,8 +20,10 @@ const store = {
   set(k, v) { try { localStorage.setItem('ta:' + k, JSON.stringify(v)); } catch { } },
   del(k) { try { localStorage.removeItem('ta:' + k); } catch { } },
 };
-const settings = Object.assign({ theme: 'auto', rate: 1, autoAdvance: true, transcript: false, voiceMode: 'auto', voice: '' }, store.get('settings', {}));
+const settings = Object.assign({ theme: 'light', rate: 1, autoAdvance: true, transcript: false, voiceMode: 'auto', voice: '' }, store.get('settings', {}));
 const saveSettings = () => store.set('settings', settings);
+// one-time migration: the old default was 'auto' (follow device); light is now the default
+if (!settings.themeV2) { if (settings.theme === 'auto') settings.theme = 'light'; settings.themeV2 = 1; saveSettings(); }
 
 function toast(msg, ms = 2400) {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t);

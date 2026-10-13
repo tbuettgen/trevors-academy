@@ -101,7 +101,9 @@ svg.i { width: 1.15em; height: 1.15em; vertical-align: -.2em; flex: none; }
 .topbar a { color: inherit; }
 .logo { display: flex; align-items: center; gap: 10px; font-family: var(--display); font-weight: 600; font-size: 1.08rem; text-decoration: none !important; white-space: nowrap; }
 .logo svg { width: 32px; height: 32px; }
-.crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; color: rgba(255, 255, 255, .72); font-size: .93rem; overflow: hidden; }
+.crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; color: rgba(255, 255, 255, .72); font-size: .93rem; overflow: hidden; white-space: nowrap; }
+.crumbs > span:not(.sep) { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.crumbs > a { flex: none; max-width: 22ch; }
 .crumbs a { color: rgba(255, 255, 255, .85); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crumbs .sep { opacity: .5; }
 .top-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
@@ -238,7 +240,13 @@ svg.i { width: 1.15em; height: 1.15em; vertical-align: -.2em; flex: none; }
 .slide .watermark { position: absolute; right: 2.2cqw; bottom: 1.6cqw; font-size: 1.1cqw; color: var(--muted); font-weight: 700; opacity: .8; }
 @container (max-width: 640px) { .slide { font-size: 2.6cqw; } }
 @media (max-width: 760px) {
-  .stage { aspect-ratio: auto; min-height: 60vh; }
+  .stage { aspect-ratio: auto; min-height: 0; }
+  .controls { gap: 6px; }
+  .controls .progress-dots { order: 10; flex-basis: 100%; min-width: 0; }
+  .controls .count { min-width: 0; margin-right: auto; }
+  .page { padding: 18px 14px 60px; }
+  .examhead { margin: -18px -14px 16px; }
+  .controls #fs, .voice-note .kbd { display: none; }
   .slide { position: relative; inset: auto; font-size: 15.5px; padding: 22px 18px 26px; }
   .slide h2.st { font-size: 22px; margin-bottom: 12px; }
   .slide .kicker { font-size: 12px; }

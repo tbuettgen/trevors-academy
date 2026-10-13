@@ -160,9 +160,24 @@ function allQuestions(c) {
   c.units.forEach(u => { u.lessons.forEach(l => (l.practice || []).forEach(q => out.push({ q, u, l }))); (u.unitQuiz || []).forEach(q => out.push({ q, u, quiz: true })); });
   return out;
 }
+// Quick check = up to 3 exam-representative questions per lesson (flagged "core" by the authors, else the first auto-graded ones)
+function coreQs(l) {
+  const qs = l.practice || [];
+  const marked = qs.filter(q => q.core);
+  if (marked.length) return marked;
+  const auto = qs.filter(q => q.type !== 'open'), rest = qs.filter(q => q.type === 'open');
+  return [...auto, ...rest].slice(0, 3);
+}
+const words = s => String(s || '').split(/\s+/).filter(Boolean).length;
+// minutes: narration at 1.25x (150 wpm base) + a few seconds per slide + a per-type estimate per quick-check question
+const Q_MIN = { mc: 0.8, tf: 0.6, tfgroup: 1.2, numeric: 1.6, open: 2, group: 2.5 };
+const qMin = q => Q_MIN[q.type] || 1;
+function lessonMinutes(l) { return sum(l.slides.map(s => words(s.narration) / 150 / 1.25 + 0.12)) + sum(coreQs(l).map(qMin)); }
+function unitMinutes(u) { return sum(u.lessons.map(lessonMinutes)); }
+function unitAllMinutes(u) { return sum(u.lessons.map(l => sum(l.slides.map(s => words(s.narration) / 150 + 0.15)) + sum((l.practice || []).map(qMin)))) + sum((u.unitQuiz || []).map(qMin)); }
 const slideCount = c => sum(c.units.map(u => sum(u.lessons.map(l => l.slides.length))));
 const qCount = c => sum(c.units.map(u => sum(u.lessons.map(l => (l.practice || []).length)) + (u.unitQuiz || []).length));
-const courseMinutes = c => sum(c.units.map(u => u.estMinutes || 0));
+const courseMinutes = c => sum(c.units.map(unitMinutes));
 
 // ============================================================ progress
 const progCache = {};
@@ -178,7 +193,7 @@ function recordQ(cid, qid, firstCorrect, solved, revealed) {
   saveP(cid);
 }
 function lessonPracticeFrac(cid, l) {
-  const qs = l.practice || []; if (!qs.length) return lessonSeenFrac(cid, l);
+  const qs = coreQs(l); if (!qs.length) return lessonSeenFrac(cid, l);
   return sum(qs.map(q => qScore(cid, q.id) || 0)) / qs.length;
 }
 function lessonMastery(cid, l) { return 0.4 * lessonSeenFrac(cid, l) + 0.6 * lessonPracticeFrac(cid, l); }
@@ -192,9 +207,8 @@ function upNext(c) {
   for (const u of c.units) {
     for (const l of u.lessons) {
       if (lessonSeenFrac(c.id, l) < 1) return { kind: 'learn', u, l, href: `#/${c.id}/learn/${l.id}`, label: 'Watch', title: l.title };
-      if ((l.practice || []).some(q => qScore(c.id, q.id) == null)) return { kind: 'practice', u, l, href: `#/${c.id}/practice/${l.id}`, label: 'Practice', title: l.title };
+      if (coreQs(l).some(q => qScore(c.id, q.id) == null)) return { kind: 'practice', u, l, href: `#/${c.id}/practice/${l.id}`, label: 'Quick check', title: l.title };
     }
-    if ((u.unitQuiz || []).length && P(c.id).quiz[u.id] == null) return { kind: 'quiz', u, href: `#/${c.id}/quiz/${u.id}`, label: 'Unit quiz', title: u.title };
   }
   return { kind: 'exam', href: `#/${c.id}/exams`, label: 'Practice exams', title: 'Take a timed practice final' };
 }
@@ -208,7 +222,7 @@ function shell(c, crumbParts, inner) {
       <nav class="crumbs">${crumbs(crumbParts || [])}</nav>
       <div class="top-actions">
         ${c ? `<a class="btn ghost sm" href="#/${c.id}/exams" title="Practice exams">${icon('clock')}<span class="lbl">Exams</span></a>
-        <a class="btn ghost sm" href="#/${c.id}/cheatsheet" title="Cheat sheet">${icon('sheet')}<span class="lbl">Cheat sheet</span></a>` : ''}
+        <a class="btn ghost sm" href="#/${c.id}/cheatsheet" title="${esc(c.sheetLabel || 'Cheat sheet')}">${icon('sheet')}<span class="lbl">${esc(c.sheetLabel || 'Cheat sheet')}</span></a>` : ''}
         <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">${icon(themeIcon)}</button>
         <button class="icon-btn" id="setBtn" title="Settings" aria-label="Settings">${icon('gear')}</button>
       </div></header>
@@ -224,7 +238,7 @@ function sideNav(c, activeUnit) {
     <h4>Test yourself</h4>
     <a class="item" href="#/${c.id}/exams"><span class="num" style="background:var(--accent4)">${icon('clock')}</span>Practice exams</a>
     <a class="item" href="#/${c.id}/review"><span class="num" style="background:var(--bad)">${icon('redo')}</span>Review my mistakes</a>
-    <a class="item" href="#/${c.id}/cheatsheet"><span class="num" style="background:var(--accent3)">${icon('sheet')}</span>Cheat sheet</a>
+    <a class="item" href="#/${c.id}/cheatsheet"><span class="num" style="background:var(--accent3)">${icon('sheet')}</span>${esc(c.sheetLabel || 'Cheat sheet')}</a>
   </aside>`;
 }
 const footer = () => `<div class="footer">Trevor's Academy · study notes built from course materials for personal review · not an official Georgetown resource</div>`;
@@ -243,7 +257,7 @@ function route() {
     case undefined: return viewCourse(c);
     case 'unit': return viewUnit(c, id);
     case 'learn': return viewLesson(c, id, parts[3]);
-    case 'practice': return viewPractice(c, 'lesson', id);
+    case 'practice': return viewPractice(c, 'lesson', id, parts[3] === 'all');
     case 'quiz': return viewPractice(c, 'quiz', id);
     case 'review': return viewPractice(c, 'review');
     case 'exams': return viewExams(c);
@@ -264,7 +278,7 @@ function viewHome() {
       <div class="code">${esc(c.code)}</div><h3>${esc(c.title)}</h3><div class="muted small">${esc(c.subtitle || '')}</div>
       <p class="muted" style="margin-top:6px">${esc(c.description)}</p>
       <div class="row" style="margin-top:4px"><div class="bar" style="flex:1"><i style="width:${pct(m)}%"></i></div><b class="small">${pct(m)}%</b></div>
-      <div class="stats"><span class="chip core">${c.units.length} units</span><span class="chip">${slideCount(c)} slides</span><span class="chip">${qCount(c)} practice Qs</span><span class="chip high">${c.exams.length} exams</span><span class="chip">≈ ${fmtMin(courseMinutes(c))}</span></div>
+      <div class="stats"><span class="chip core">${c.units.length} units</span><span class="chip">${slideCount(c)} slides</span><span class="chip">${qCount(c)} practice Qs</span><span class="chip high">${c.exams.length} exams</span><span class="chip">≈ ${fmtMin(courseMinutes(c))} core</span></div>
       <div class="row" style="margin-top:10px"><span class="btn sm">${m > 0 ? 'Continue' : 'Start'}: ${esc(nx.label)}</span></div>
     </div></a>`;
   }).join('');
@@ -290,11 +304,11 @@ function viewCourse(c) {
   const attempted = Object.keys(p.q).length, correct = Object.values(p.q).filter(r => r.c).length;
   let t = 0;
   const rows = c.units.map(u => {
-    const start = t; t += u.estMinutes || 0; const um = unitMastery(c.id, u);
+    const start = t; t += unitMinutes(u); const um = unitMastery(c.id, u);
     return `<a class="plan-row" href="#/${c.id}/unit/${u.id}">
       <div class="when"><b style="background:${unitColor(u)}">${u.num}</b>+${fmtClock(start * 60).replace(/:00$/, '')}</div>
       <div><h3>${esc(u.title)}</h3><div class="muted small">${esc(u.tagline || '')}</div>
-        <div class="meta">${u.priority ? `<span class="chip ${u.priority}">${u.priority === 'core' ? 'Core' : u.priority === 'high' ? 'High yield' : 'Know it'}</span>` : ''}<span class="chip">${fmtMin(u.estMinutes || 0)}</span><span class="chip">${u.lessons.length} lessons</span><div class="bar"><i style="width:${pct(um)}%"></i></div></div></div>
+        <div class="meta">${u.priority ? `<span class="chip ${u.priority}">${u.priority === 'core' ? 'Core' : u.priority === 'high' ? 'High yield' : 'Know it'}</span>` : ''}<span class="chip">${fmtMin(unitMinutes(u))}</span><span class="chip">${u.lessons.length} lessons</span><div class="bar"><i style="width:${pct(um)}%"></i></div></div></div>
       <div class="ring" style="--p:${pct(um)}"><span>${pct(um)}%</span></div></a>`;
   }).join('');
   const ex = c.exam || {};
@@ -315,14 +329,14 @@ function viewCourse(c) {
       <div class="tile"><div class="v">${seenSlides}/${slideCount(c)}</div><div class="k">slides watched</div></div>
       <div class="tile"><div class="v">${attempted ? pct(correct / attempted) + '%' : '—'}</div><div class="k">first-try accuracy (${attempted} Qs)</div></div>
       <div class="tile"><div class="v">${p.exams.length}</div><div class="k">practice exams taken</div></div>
-      <div class="tile"><div class="v">≈ ${fmtMin(courseMinutes(c))}</div><div class="k">full cram time</div></div>
+      <div class="tile"><div class="v">≈ ${fmtMin(courseMinutes(c) + (c.exam?.minutes || 75))}</div><div class="k">cram time incl. one practice final</div></div>
     </div>
-    <div class="section-title"><h2>Your cram plan</h2><span class="muted small">Go in order · times are cumulative · play narration at 1.25–1.5× to go faster</span></div>
+    <div class="section-title"><h2>Your cram plan</h2><span class="muted small">Go in order. Times are cumulative and assume narration at 1.25× plus each lesson's 3-question quick check. Unit quizzes and full practice sets are optional extra reps.</span></div>
     <div class="plan">${rows}
       <a class="plan-row" href="#/${c.id}/exams"><div class="when"><b style="background:var(--accent4)">${icon('clock')}</b>+${fmtClock(t * 60).replace(/:00$/, '')}</div>
         <div><h3>Timed practice finals</h3><div class="muted small">${c.exams.filter(e => e.kind === 'real').length} real past finals + ${c.exams.filter(e => e.kind !== 'real').length} more · on-screen timer with 1.5× extended option</div></div><span class="btn purple sm">Open</span></a>
       <a class="plan-row" href="#/${c.id}/cheatsheet"><div class="when"><b style="background:var(--accent3)">${icon('sheet')}</b>last</div>
-        <div><h3>Print your cheat sheet</h3><div class="muted small">Every key formula and fact, sized to fit the allowed sheet</div></div><span class="btn secondary sm">Open</span></a>
+        <div><h3>Print your ${esc((c.sheetLabel || 'Cheat sheet').toLowerCase())}</h3><div class="muted small">${c.sheetLabel ? 'Every must-memorize definition, list and number on two pages' : 'Every key formula and fact, sized to fit the allowed sheet'}</div></div><span class="btn secondary sm">Open</span></a>
     </div>${footer()}</div></div></div>`);
 }
 
@@ -331,25 +345,26 @@ function viewUnit(c, uid) {
   const u = c.units.find(x => x.id === uid); if (!u) return viewCourse(c);
   const col = unitColor(u), idx = c.units.indexOf(u), prevU = c.units[idx - 1], nextU = c.units[idx + 1];
   const lessons = u.lessons.map((l, i) => {
-    const seen = lessonSeenFrac(c.id, l), pf = lessonPracticeFrac(c.id, l), done = seen >= 1 && (l.practice || []).every(q => qScore(c.id, q.id) != null);
-    const nq = (l.practice || []).length;
+    const seen = lessonSeenFrac(c.id, l), pf = lessonPracticeFrac(c.id, l), done = seen >= 1 && coreQs(l).every(q => qScore(c.id, q.id) != null);
+    const nq = (l.practice || []).length, nc = coreQs(l).length, nAllDone = (l.practice || []).filter(q => qScore(c.id, q.id) != null).length;
     return `<div class="card lesson-card"><div class="idx ${done ? 'done' : ''}">${done ? icon('check') : i + 1}</div>
-      <div><h3>${esc(l.title)}</h3><div class="row small muted"><span>${l.slides.length} slides · ${nq} practice · ~${l.estMinutes || Math.round(l.slides.length * 0.7 + nq)} min</span></div>
-        <div class="row" style="margin-top:8px"><div class="bar" style="width:160px"><i style="width:${pct(lessonMastery(c.id, l))}%"></i></div><span class="small muted">${pct(seen)}% watched${nq ? ` · ${pct(pf)}% practice` : ''}</span></div></div>
+      <div><h3>${esc(l.title)}</h3><div class="row small muted"><span>${l.slides.length} slides · ~${fmtMin(lessonMinutes(l))} with quick check · ${nq} practice questions in all</span></div>
+        <div class="row" style="margin-top:8px"><div class="bar" style="width:160px"><i style="width:${pct(lessonMastery(c.id, l))}%"></i></div><span class="small muted">${pct(seen)}% watched${nq ? ` · quick check ${pct(pf)}% · ${nAllDone}/${nq} tried` : ''}</span></div></div>
       <div class="acts"><a class="btn ${seen < 1 ? '' : 'secondary'}" href="#/${c.id}/learn/${l.id}">${icon('play')} ${seen > 0 && seen < 1 ? 'Resume' : seen >= 1 ? 'Rewatch' : 'Watch'}</a>
-        ${nq ? `<a class="btn ${seen >= 1 && pf < 1 ? 'good' : 'secondary'}" href="#/${c.id}/practice/${l.id}">${icon('target')} Practice</a>` : ''}</div></div>`;
+        ${nq ? `<a class="btn ${seen >= 1 && pf < 1 ? 'good' : 'secondary'}" href="#/${c.id}/practice/${l.id}">${icon('target')} Quick check (${nc})</a>` : ''}
+        ${nq > nc ? `<a class="btn ghost" href="#/${c.id}/practice/${l.id}/all">All ${nq}</a>` : ''}</div></div>`;
   }).join('');
   const qz = (u.unitQuiz || []).length, best = P(c.id).quiz[u.id];
   shell(c, [[c.code, `#/${c.id}`], [`Unit ${u.num}`]], `<div class="page"><div class="with-side">${sideNav(c, u.id)}<div>
     <section class="unit-head" style="background:linear-gradient(135deg, ${col}, color-mix(in srgb, ${col} 55%, #041e42))">
       <div class="kick">Unit ${u.num} of ${c.units.length}</div><h1>${esc(u.title)}</h1><p>${esc(u.tagline || '')}</p>
-      <div class="chips"><span class="chip">${icon('clock')} ~${fmtMin(u.estMinutes || 0)}</span><span class="chip">${u.lessons.length} lessons</span><span class="chip">${pct(unitMastery(c.id, u))}% mastered</span>${(u.sources || []).length ? `<span class="chip">From: ${esc(u.sources.slice(0, 3).join(' · '))}</span>` : ''}</div>
+      <div class="chips"><span class="chip">${icon('clock')} ~${fmtMin(unitMinutes(u))} core · ${fmtMin(unitAllMinutes(u))} with everything</span><span class="chip">${u.lessons.length} lessons</span><span class="chip">${pct(unitMastery(c.id, u))}% mastered</span>${(u.sources || []).length ? `<span class="chip">From: ${esc(u.sources.slice(0, 3).join(' · '))}</span>` : ''}</div>
     </section>
     ${(u.objectives || []).length ? `<div class="card pad" style="margin-top:16px"><h3>By the end of this unit you can…</h3><ul class="objectives">${u.objectives.map(o => `<li>${tex(o)}</li>`).join('')}</ul></div>` : ''}
     <div class="section-title"><h2>Lessons</h2></div>
     <div class="grid">${lessons}
       ${qz ? `<div class="card lesson-card" style="border-color:color-mix(in srgb, var(--accent4) 40%, var(--line))"><div class="idx" style="background:var(--exam-soft);color:var(--accent4)">${icon('trophy')}</div>
-        <div><h3>Unit ${u.num} quiz</h3><div class="small muted">${qz} exam-style questions${best != null ? ` · best score <b>${pct(best)}%</b>` : ''}</div></div>
+        <div><h3>Unit ${u.num} quiz <span class="chip">optional</span></h3><div class="small muted">${qz} exam-style questions, about ${fmtMin(sum(u.unitQuiz.map(qMin)))}${best != null ? ` · best score <b>${pct(best)}%</b>` : ''}</div></div>
         <div class="acts"><a class="btn purple" href="#/${c.id}/quiz/${u.id}">${best != null ? 'Retake' : 'Take'} quiz</a></div></div>` : ''}
     </div>
     ${(u.keyFormulas || []).length || (u.keyFacts || []).length ? `<div class="section-title"><h2>Key formulas &amp; facts</h2><span class="muted small">These also go on your cheat sheet</span></div>
@@ -416,6 +431,7 @@ class Narrator {
   stop() { this.tok++; this.playing = false; this.paused = false; try { this.audio.pause(); } catch { } this.audio.ontimeupdate = this.audio.onended = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
 }
 const narrator = new Narrator();
+window.__ta = { narrator }; // debug hook for QA
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { };
 
 // ============================================================ lesson player
@@ -460,10 +476,10 @@ function viewLesson(c, lid, startAt) {
         <button class="icon-btn" id="fs" title="Fullscreen (F)" aria-label="Fullscreen">${icon('expand')}</button>
       </div>
       <div class="transcript ${settings.transcript ? '' : 'hidden'}" id="trbox"><div class="lbl">Narration</div><div id="trtext"></div></div>
-      <div class="voice-note">${hasEleven && settings.voiceMode !== 'browser' ? `${icon('vol')} Narrated by ${esc(c.voice || 'ElevenLabs')}` : `${icon('vol')} Using your browser's voice${hasEleven ? '' : ' (studio narration coming soon)'} · change voice in ${icon('gear')} settings`} · ← → to move · space to play/pause</div>
+      <div class="voice-note">${hasEleven && settings.voiceMode !== 'browser' ? `${icon('vol')} Narrated by ${esc(c.voice || 'ElevenLabs')}` : `${icon('vol')} Using your browser's voice${hasEleven ? '' : ' (studio narration coming soon)'} · change voice in ${icon('gear')} settings`} <span class="kbd"> · ← → to move · space to play/pause</span></div>
     </div>
     <div class="card outline" id="outline"><div class="muted small" style="font-weight:800;padding:6px 10px">In this lesson</div>${l.slides.map((s, k) => `<a href="#" data-k="${k}"><span class="n">${k + 1}</span><span>${tex(s.title)}</span></a>`).join('')}
-      <div style="padding:10px">${nq ? `<a class="btn good" style="width:100%" href="#/${c.id}/practice/${l.id}">${icon('target')} Practice (${nq})</a>` : ''}</div></div>
+      <div style="padding:10px">${nq ? `<a class="btn good" style="width:100%" href="#/${c.id}/practice/${l.id}">${icon('target')} Quick check (${coreQs(l).length})</a>` : ''}</div></div>
     </div>${footer()}</div>`);
   const stage = $('#stage'), pp = $('#pp');
 
@@ -510,7 +526,7 @@ function viewLesson(c, lid, startAt) {
     const card = document.createElement('div'); card.className = 'endcard';
     card.innerHTML = `<div><div style="font-size:2.4rem">🎉</div><h2>Lesson complete!</h2><p class="muted">${esc(l.title)}</p>
       <div class="row" style="justify-content:center;margin-top:14px">
-        ${nq ? `<a class="btn good big" href="#/${c.id}/practice/${l.id}">${icon('target')} Practice ${nq} questions</a>` : ''}
+        ${nq ? `<a class="btn good big" href="#/${c.id}/practice/${l.id}">${icon('target')} Quick check (${coreQs(l).length} questions)</a>` : ''}
         ${nextL ? `<a class="btn ${nq ? 'secondary' : ''} big" href="#/${c.id}/learn/${nextL.id}">Next lesson ${icon('next')}</a>` : `<a class="btn secondary big" href="#/${c.id}/exams">Practice exams</a>`}
         <button class="btn ghost" id="again">${icon('redo')} Replay</button></div></div>`;
     stage.appendChild(card);
@@ -738,11 +754,14 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
 }
 
 // ============================================================ practice / quiz / mistakes runner
-function viewPractice(c, kind, id) {
+function viewPractice(c, kind, id, all = false) {
   let qs = [], title = '', back = `#/${c.id}`, u = null, l = null, sub = '';
   if (kind === 'lesson') {
     ({ u, l } = findLesson(c, id)); if (!l) return viewCourse(c);
-    qs = (l.practice || []).slice(); title = `Practice: ${l.title}`; back = `#/${c.id}/unit/${u.id}`; sub = `Unit ${u.num} · Lesson ${u.lessons.indexOf(l) + 1}`;
+    const full = (l.practice || []).slice(), core = coreQs(l);
+    qs = all || full.length <= core.length ? full : core;
+    title = qs === full ? `Practice: ${l.title}` : `Quick check: ${l.title}`; back = `#/${c.id}/unit/${u.id}`;
+    sub = `Unit ${u.num} · Lesson ${u.lessons.indexOf(l) + 1}` + (qs === core ? ` · ${core.length} of ${full.length} questions` : '');
   } else if (kind === 'quiz') {
     u = c.units.find(x => x.id === id); if (!u) return viewCourse(c);
     qs = (u.unitQuiz || []).slice(); title = `Unit ${u.num} quiz: ${u.title}`; back = `#/${c.id}/unit/${u.id}`; sub = 'Exam-style questions';
@@ -801,6 +820,7 @@ function viewPractice(c, kind, id) {
       <div class="qdots" style="justify-content:center;margin:12px 0">${qs.map((q, k) => `<button class="${results[k] == null ? '' : results[k] >= 0.99 ? 'ok' : 'bad'}" disabled>${k + 1}</button>`).join('')}</div>
       <div class="row" style="justify-content:center;margin-top:10px">
         <button class="btn secondary" id="retry">${icon('redo')} Try again</button>
+        ${kind === 'lesson' && !all && (l.practice || []).length > qs.length ? `<a class="btn secondary" href="#/${c.id}/practice/${l.id}/all">${icon('target')} All ${(l.practice || []).length} questions</a>` : ''}
         ${kind === 'lesson' && nextL ? `<a class="btn" href="#/${c.id}/learn/${nextL.id}">Next lesson: ${esc(nextL.title)} ${icon('next')}</a>` : ''}
         ${kind === 'lesson' && !nextL ? `<a class="btn purple" href="#/${c.id}/exams">Practice exams</a>` : ''}
         ${kind === 'quiz' && nextU ? `<a class="btn" href="#/${c.id}/unit/${nextU.id}">Unit ${nextU.num}: ${esc(nextU.title)} ${icon('next')}</a>` : ''}
@@ -990,8 +1010,8 @@ function viewCheatsheet(c) {
   const d = cheatData(c);
   const size = store.get('cs-size:' + c.id, 8.2);
   const secs = d.sections.map(s => `<div class="cs-sec"><h4>${tex(esc(s.title))}</h4>${s.items.map(it => `<div class="cs-item">${it.name ? `<span class="n">${tex(esc(it.name))}</span> ` : ''}${it.tex ? `<div class="t">${texBlock(it.tex)}</div>` : ''}${it.html ? tex(it.html) : ''}${it.note ? `<div class="note">${tex(it.note)}</div>` : ''}</div>`).join('')}</div>`).join('');
-  shell(c, [[c.code, `#/${c.id}`], ['Cheat sheet']], `<div class="page">
-    <div class="cs-toolbar"><div><h1 style="margin:0">${esc(d.title || 'Cheat sheet')}</h1><div class="muted small">${esc(d.subtitle || (c.exam?.allowed ? c.exam.allowed + '. Print it, then add your own notes in the margins.' : 'Print it, then add your own notes in the margins.'))}</div></div>
+  shell(c, [[c.code, `#/${c.id}`], [c.sheetLabel || 'Cheat sheet']], `<div class="page">
+    <div class="cs-toolbar"><div><h1 style="margin:0">${esc(d.title || c.sheetLabel || 'Cheat sheet')}</h1><div class="muted small">${esc(d.subtitle || (c.exam?.allowed ? c.exam.allowed + '. Print it, then add your own notes in the margins.' : 'Print it, then add your own notes in the margins.'))}</div></div>
       <span class="spacer"></span>
       <label class="small muted row" style="gap:6px">Print size <input type="range" id="csz" min="6.5" max="10" step="0.1" value="${size}"><b id="cszv">${size}pt</b></label>
       <button class="btn" id="pr">${icon('print')} Print / save PDF</button></div>

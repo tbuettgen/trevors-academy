@@ -611,6 +611,9 @@ function viewLesson(c, lid, startAt) {
   document.addEventListener('fullscreenchange', onResize);
   onCleanup(() => { document.removeEventListener('keydown', onKey); window.removeEventListener('resize', onResize); document.removeEventListener('fullscreenchange', onResize); if (document.fullscreenElement) document.exitFullscreen().catch(() => { }); });
   render();
+  // start the narration right away when the lesson was opened by a click (browsers allow audio after a user gesture)
+  const activated = navigator.userActivation ? navigator.userActivation.hasBeenActive : true;
+  if (activated && settings.autoplay !== false) setTimeout(() => { if (!playing && $('#stage')) play(); }, 350);
 }
 
 // ============================================================ question engine

@@ -431,7 +431,7 @@ class Narrator {
   stop() { this.tok++; this.playing = false; this.paused = false; try { this.audio.pause(); } catch { } this.audio.ontimeupdate = this.audio.onended = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
 }
 const narrator = new Narrator();
-window.__ta = { narrator }; // debug hook for QA
+window.__ta = { narrator, get data() { return DATA; }, fitSlide, slideHTML }; // debug hooks for QA
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { };
 
 // ============================================================ lesson player
@@ -450,6 +450,7 @@ function fitSlide(stage) {
   let f = 1; sl.style.setProperty('--fs', f);
   const over = () => { const b = $('.sbody', sl); return b && (b.scrollHeight > b.clientHeight + 2 || sl.scrollHeight > sl.clientHeight + 2); };
   while (over() && f > 0.6) { f -= 0.05; sl.style.setProperty('--fs', f.toFixed(2)); }
+  sl.classList.toggle('scroll', over()); // last resort: scroll rather than clip
 }
 function viewLesson(c, lid, startAt) {
   const { u, l } = findLesson(c, lid); if (!l) return viewCourse(c);

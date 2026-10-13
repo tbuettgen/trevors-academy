@@ -230,7 +230,8 @@ svg.i { width: 1.15em; height: 1.15em; vertical-align: -.2em; flex: none; }
 .slide .exam-tip b { white-space: nowrap; }
 .slide.layout-title { justify-content: center; text-align: left; padding-left: 8cqw; background: linear-gradient(135deg, var(--surface) 55%, var(--accent-soft)); }
 .slide.layout-title h2.st { font-size: 4.6cqw; max-width: 22ch; }
-.slide.layout-title .sbody { flex: 0; font-size: 2.2cqw; color: var(--ink2); }
+.slide.layout-title .sbody { flex: none; font-size: calc(2.1cqw * var(--fs, 1)); color: var(--ink2); }
+.slide.scroll .sbody { overflow-y: auto; }
 .slide.layout-formula .formula, .slide .formula { font-size: 1.25em; }
 .slide.layout-pitfall .kicker { color: var(--bad); }
 .slide.layout-recap { background: linear-gradient(180deg, var(--surface), var(--good-soft)); }

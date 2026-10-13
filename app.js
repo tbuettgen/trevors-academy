@@ -1271,26 +1271,10 @@ function mdLite(t) {
   });
   flush(); return tex(out.join(''));
 }
-// ---- voice: speech in (Web Speech recognition) and speech out (browser voices)
+// ---- voice input: ask questions by microphone (Web Speech recognition); answers stay text
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-const voiceIn = !!SR, voiceOut = !!window.speechSynthesis;
+const voiceIn = !!SR;
 let recog = null;
-function speakable(t) {
-  return String(t).replace(/\\\(|\\\)|\\\[|\\\]/g, ' ').replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, '$1 over $2').replace(/\\(sigma|beta|alpha|rho|mu|omega|Delta|delta|pi|lambda)/g, '$1')
-    .replace(/\^2/g, ' squared').replace(/_\{?([a-z0-9]+)\}?/gi, ' $1').replace(/\\[a-z]+/gi, ' ').replace(/[{}$*`#]/g, '').replace(/\s*\n+\s*/g, '. ').replace(/\s{2,}/g, ' ').trim();
-}
-function speakReply(text, onDone) {
-  if (!voiceOut) return onDone && onDone();
-  speechSynthesis.cancel();
-  const parts = speakable(text).match(/[^.!?]+[.!?]*/g) || [];
-  let i = 0;
-  const next = () => {
-    if (!tutorState || !tutorState.voice || i >= parts.length) return onDone && onDone();
-    const u = new SpeechSynthesisUtterance(parts[i++].trim()); const v = pickVoice(); if (v) { u.voice = v; u.lang = v.lang; } u.rate = Math.min(1.3, settings.rate || 1);
-    u.onend = next; u.onerror = next; speechSynthesis.speak(u);
-  };
-  next();
-}
 function listen(c, u) {
   if (!voiceIn) { toast('Voice input needs Chrome, Edge or Safari.'); return; }
   if (recog) { recog.stop(); return; }
@@ -1316,7 +1300,7 @@ function openTutor(c, u, focus) {
   let d = $('#tutor');
   if (!d) {
     d = document.createElement('aside'); d.id = 'tutor'; d.className = 'tutor'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Ask the tutor');
-    d.innerHTML = `<div class="tutor-head">${icon('bulb')}<b>Ask the tutor</b><span class="chip">${esc(u.title.slice(0, 34))}</span><span class="spacer"></span>${voiceIn && voiceOut ? `<button class="icon-btn" id="tvoice" title="Voice mode: talk back and forth, answers read aloud" aria-label="Voice mode">${icon('headset')}</button>` : ''}<button class="icon-btn" id="tclose" aria-label="Close">${icon('x')}</button></div>
+    d.innerHTML = `<div class="tutor-head">${icon('bulb')}<b>Ask the tutor</b><span class="chip">${esc(u.title.slice(0, 34))}</span><span class="spacer"></span><button class="icon-btn" id="tclose" aria-label="Close">${icon('x')}</button></div>
       <div class="tutor-focus" id="tfocus"></div><div class="tutor-log" id="tlog"></div>
       <div class="tutor-sugg" id="tsugg"></div>
       <form class="tutor-form" id="tform"><textarea class="field" id="tin" rows="2" placeholder="Ask anything about this…"></textarea>${voiceIn ? `<button type="button" class="icon-btn mic" id="tmic" title="Ask by voice" aria-label="Ask by voice">${icon('mic')}</button>` : ''}<button class="btn" id="tsend">${icon('next')}</button></form>
@@ -1324,11 +1308,6 @@ function openTutor(c, u, focus) {
     document.body.appendChild(d);
     $('#tclose').onclick = closeTutor;
     if ($('#tmic')) $('#tmic').onclick = () => listen(c, u);
-    if ($('#tvoice')) $('#tvoice').onclick = () => {
-      tutorState.voice = !tutorState.voice; $('#tvoice').classList.toggle('on', tutorState.voice);
-      $('#tutor').classList.toggle('voice', tutorState.voice);
-      if (tutorState.voice) { toast('Voice mode on: ask out loud, answers are read back.'); listen(c, u); } else { if (recog) recog.abort(); speechSynthesis.cancel(); }
-    };
     $('#tform').onsubmit = ev => { ev.preventDefault(); const v = $('#tin').value.trim(); if (v) { $('#tin').value = ''; askTutor(c, u, v); } };
     $('#tin').addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('#tform').requestSubmit(); } });
   }
@@ -1350,8 +1329,7 @@ async function askTutor(c, u, text) {
   const S = tutorState; if (!S || S.busy) return;
   const f = S.focus;
   const ctx = f ? `[The student is looking at ${f.kind === 'question' ? 'this practice question' : 'this slide'}]\n${f.text}\n${f.kind === 'question' ? (f.attempted ? '[They have already attempted it.]' : '[They have NOT attempted it yet: hints only, no final answer.]') : ''}\n\n` : '';
-  const vi = S.voice ? '\n\n[Voice mode: the answer will be read aloud. Reply in 2-4 short conversational sentences, no LaTeX, symbols, lists or formatting; say numbers and formulas in words.]' : '';
-  S.msgs.push({ role: 'user', content: ctx + text + vi, shown: text });
+  S.msgs.push({ role: 'user', content: ctx + text, shown: text });
   const reply = { role: 'assistant', content: '' }; S.msgs.push(reply); S.busy = true; renderTutorLog();
   $('#tsend') && ($('#tsend').disabled = true);
   try {
@@ -1376,7 +1354,6 @@ async function askTutor(c, u, text) {
     reply.content = st === 401 ? 'The tutor key was rejected (invalid or revoked).' : st === 429 ? 'The tutor is busy (rate or spend limit reached). Try again in a minute.' : st >= 500 ? 'Claude is temporarily unavailable. Try again shortly.' : 'Could not reach the tutor: ' + (e.message || 'network error');
   } finally {
     S.busy = false; $('#tsend') && ($('#tsend').disabled = false); renderTutorLog();
-    if (S.voice && tutorState === S && reply.content) speakReply(reply.content, () => { if (tutorState === S && S.voice && !S.busy) listen(c, u); });
   }
 }
 

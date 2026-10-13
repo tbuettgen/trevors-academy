@@ -203,13 +203,46 @@ function unitMastery(cid, u) {
   return 0.75 * ls + 0.25 * qz;
 }
 function courseMastery(c) { return c.units.length ? sum(c.units.map(u => unitMastery(c.id, u))) / c.units.length : 0; }
+// mixed-review checkpoints: interleave everything learned so far (spaced retrieval)
+function checkpointsFor(c) {
+  const n = c.units.length, every = n >= 9 ? 2 : 3, out = [];
+  for (let k = every; k < n; k += every) out.push({ upto: k, n: 6, title: `Checkpoint: mixed review of Units 1–${k}` });
+  out.push({ upto: n, n: 12, title: 'Pre-exam mixed review: all units', final: true });
+  return out;
+}
+function mixedPool(c, upto) {
+  const p = P(c.id), now = Date.now(), pool = [];
+  c.units.slice(0, upto).forEach(u => {
+    const core = new Set(u.lessons.flatMap(l => coreQs(l).map(q => q.id)));
+    [...u.lessons.flatMap(l => l.practice || []), ...(u.unitQuiz || [])].forEach(q => {
+      const r = p.q[q.id];
+      const w = r ? (!r.c ? 3 : (now - (r.t || 0) > 3600e3 ? 1 : 0.4)) : (core.has(q.id) ? 1.2 : 2);
+      pool.push({ q, w });
+    });
+  });
+  return pool;
+}
+function sampleWeighted(pool, n) {
+  const a = pool.slice(), out = [];
+  while (out.length < n && a.length) {
+    const tot = sum(a.map(x => x.w)); let r = Math.random() * tot, i = 0;
+    for (; i < a.length - 1; i++) { r -= a[i].w; if (r <= 0) break; }
+    out.push(a[i].q); a.splice(i, 1);
+  }
+  return out;
+}
 function upNext(c) {
-  for (const u of c.units) {
+  const cps = checkpointsFor(c);
+  for (const [ui, u] of c.units.entries()) {
+    const due = cps.find(cp => !cp.final && cp.upto === ui && P(c.id).checkpoints?.[cp.upto] == null);
+    if (due) return { kind: 'quiz', href: `#/${c.id}/mixed/${due.upto}`, label: 'Checkpoint', title: due.title };
     for (const l of u.lessons) {
       if (lessonSeenFrac(c.id, l) < 1) return { kind: 'learn', u, l, href: `#/${c.id}/learn/${l.id}`, label: 'Watch', title: l.title };
       if (coreQs(l).some(q => qScore(c.id, q.id) == null)) return { kind: 'practice', u, l, href: `#/${c.id}/practice/${l.id}`, label: 'Quick check', title: l.title };
     }
   }
+  const fin = cps.find(cp => cp.final);
+  if (fin && P(c.id).checkpoints?.[fin.upto] == null) return { kind: 'quiz', href: `#/${c.id}/mixed/${fin.upto}`, label: 'Pre-exam mixed review', title: fin.title };
   return { kind: 'exam', href: `#/${c.id}/exams`, label: 'Practice exams', title: 'Take a timed practice final' };
 }
 
@@ -257,7 +290,8 @@ function route() {
     case undefined: return viewCourse(c);
     case 'unit': return viewUnit(c, id);
     case 'learn': return viewLesson(c, id, parts[3]);
-    case 'practice': return viewPractice(c, 'lesson', id, parts[3] === 'all');
+    case 'practice': return viewPractice(c, parts[3] === 'testout' ? 'testout' : 'lesson', id, parts[3] === 'all');
+    case 'mixed': return viewPractice(c, 'mixed', id);
     case 'quiz': return viewPractice(c, 'quiz', id);
     case 'review': return viewPractice(c, 'review');
     case 'exams': return viewExams(c);
@@ -303,14 +337,19 @@ function viewCourse(c) {
   const seenSlides = sum(c.units.map(u => sum(u.lessons.map(l => Math.round(lessonSeenFrac(c.id, l) * l.slides.length)))));
   const attempted = Object.keys(p.q).length, correct = Object.values(p.q).filter(r => r.c).length;
   let t = 0;
-  const rows = c.units.map(u => {
+  const cps = checkpointsFor(c);
+  const cpRow = cp => { const start = t; t += cp.n * 1.1; const done = P(c.id).checkpoints?.[cp.upto];
+    return `<a class="plan-row cp" href="#/${c.id}/mixed/${cp.upto}"><div class="when"><b style="background:var(--accent3)">${icon('redo')}</b>+${fmtClock(start * 60).replace(/:00$/, '')}</div>
+      <div><h3>${esc(cp.title)}</h3><div class="muted small">${cp.n} interleaved questions from everything so far, weighted toward your misses · ~${fmtMin(cp.n * 1.1)}${done != null ? ` · last score <b>${pct(done)}%</b>` : ''}</div></div><span class="btn ${done != null ? 'secondary' : 'good'} sm">${done != null ? 'Redo' : 'Start'}</span></a>`; };
+  const rows = c.units.map((u, ui) => {
+    const cp = cps.find(x => !x.final && x.upto === ui); const pre = cp ? cpRow(cp) : '';
     const start = t; t += unitMinutes(u); const um = unitMastery(c.id, u);
     return `<a class="plan-row" href="#/${c.id}/unit/${u.id}">
       <div class="when"><b style="background:${unitColor(u)}">${u.num}</b>+${fmtClock(start * 60).replace(/:00$/, '')}</div>
       <div><h3>${esc(u.title)}</h3><div class="muted small">${esc(u.tagline || '')}</div>
         <div class="meta">${u.priority ? `<span class="chip ${u.priority}">${u.priority === 'core' ? 'Core' : u.priority === 'high' ? 'High yield' : 'Know it'}</span>` : ''}<span class="chip">${fmtMin(unitMinutes(u))}</span><span class="chip">${u.lessons.length} lessons</span><div class="bar"><i style="width:${pct(um)}%"></i></div></div></div>
-      <div class="ring" style="--p:${pct(um)}"><span>${pct(um)}%</span></div></a>`;
-  }).join('');
+      <div class="ring" style="--p:${pct(um)}"><span>${pct(um)}%</span></div></a>`.replace(/^/, pre);
+  }).join('') + cpRow(cps.find(x => x.final));
   const ex = c.exam || {};
   shell(c, [[c.code + ' ' + c.title]], `<div class="page"><div class="with-side">${sideNav(c, null)}<div>
     <section class="course-head">
@@ -331,7 +370,7 @@ function viewCourse(c) {
       <div class="tile"><div class="v">${p.exams.length}</div><div class="k">practice exams taken</div></div>
       <div class="tile"><div class="v">≈ ${fmtMin(courseMinutes(c) + (c.exam?.minutes || 75))}</div><div class="k">cram time incl. one practice final</div></div>
     </div>
-    <div class="section-title"><h2>Your cram plan</h2><span class="muted small">Go in order. Times are cumulative and assume narration at 1.25× plus each lesson's 3-question quick check. Unit quizzes and full practice sets are optional extra reps.</span></div>
+    <div class="section-title"><h2>Your cram plan</h2><span class="muted small">Go in order. Times are cumulative (narration at 1.25× + each lesson's 3-question quick check). Short on time? Use <b>Test out</b> on lessons you already know and play narration at 1.5×. Unit quizzes and full practice sets are optional extra reps.</span></div>
     <div class="plan">${rows}
       <a class="plan-row" href="#/${c.id}/exams"><div class="when"><b style="background:var(--accent4)">${icon('clock')}</b>+${fmtClock(t * 60).replace(/:00$/, '')}</div>
         <div><h3>Timed practice finals</h3><div class="muted small">${c.exams.filter(e => e.kind === 'real').length} real past finals + ${c.exams.filter(e => e.kind !== 'real').length} more · on-screen timer with 1.5× extended option</div></div><span class="btn purple sm">Open</span></a>
@@ -352,7 +391,8 @@ function viewUnit(c, uid) {
         <div class="row" style="margin-top:8px"><div class="bar" style="width:160px"><i style="width:${pct(lessonMastery(c.id, l))}%"></i></div><span class="small muted">${pct(seen)}% watched${nq ? ` · quick check ${pct(pf)}% · ${nAllDone}/${nq} tried` : ''}</span></div></div>
       <div class="acts"><a class="btn ${seen < 1 ? '' : 'secondary'}" href="#/${c.id}/learn/${l.id}">${icon('play')} ${seen > 0 && seen < 1 ? 'Resume' : seen >= 1 ? 'Rewatch' : 'Watch'}</a>
         ${nq ? `<a class="btn ${seen >= 1 && pf < 1 ? 'good' : 'secondary'}" href="#/${c.id}/practice/${l.id}">${icon('target')} Quick check (${nc})</a>` : ''}
-        ${nq > nc ? `<a class="btn ghost" href="#/${c.id}/practice/${l.id}/all">All ${nq}</a>` : ''}</div></div>`;
+        ${nq > nc ? `<a class="btn ghost" href="#/${c.id}/practice/${l.id}/all">All ${nq}</a>` : ''}
+        ${seen === 0 && nc ? `<a class="btn ghost" href="#/${c.id}/practice/${l.id}/testout" title="Already know this? Answer the ${nc} quick-check questions first. All right = lesson marked done.">${icon('bolt')} Test out</a>` : ''}</div></div>`;
   }).join('');
   const qz = (u.unitQuiz || []).length, best = P(c.id).quiz[u.id];
   shell(c, [[c.code, `#/${c.id}`], [`Unit ${u.num}`]], `<div class="page"><div class="with-side">${sideNav(c, u.id)}<div>
@@ -431,7 +471,7 @@ class Narrator {
   stop() { this.tok++; this.playing = false; this.paused = false; try { this.audio.pause(); } catch { } this.audio.ontimeupdate = this.audio.onended = null; if (window.speechSynthesis) speechSynthesis.cancel(); }
 }
 const narrator = new Narrator();
-window.__ta = { narrator, get data() { return DATA; }, fitSlide, slideHTML, route: () => route() }; // debug hooks for QA
+window.__ta = { narrator, get data() { return DATA; }, fitSlide, slideHTML, route: () => route(), choiceWhy, rubricOf, lessonForQuestion, checkpointsFor }; // debug hooks for QA
 if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => { };
 
 // ============================================================ lesson player
@@ -503,10 +543,20 @@ function viewLesson(c, lid, startAt) {
     if (ended) return;
     playing = true; setPlayIcon();
     const s = l.slides[i], tot = (s.steps || []).length;
+    // worked examples: hold back the final step so the student computes it (generation effect)
+    const yourTurn = s.layout === 'example' && tot >= 2;
+    const cap = yourTurn ? tot - 1 : tot;
     narrator.start(c, s, {
-      onProgress: f => { if (tot) revealSteps(Math.floor(f * (tot + 1) + 0.0001)); },
+      onProgress: f => { if (tot) revealSteps(Math.min(cap, Math.floor(f * (tot + 1) + 0.0001))); },
       onEnd: () => {
-        if (tot) revealSteps(tot);
+        if (tot) revealSteps(cap);
+        if (yourTurn && rev < tot) {
+          playing = false; setPlayIcon();
+          const tip = document.createElement('div'); tip.className = 'yourturn';
+          tip.innerHTML = `${icon('target')} <b>Your turn:</b> work out the last step on your calculator, then press → to check it.`;
+          $('.slide', stage)?.appendChild(tip);
+          return;
+        }
         if (settings.autoAdvance && playing) { const k = i; setTimeout(() => { if (playing && i === k) go(1, true); }, 900); }
         else { playing = false; setPlayIcon(); }
       },
@@ -623,6 +673,31 @@ function answered(q, r) {
   return false;
 }
 const hasOpen = q => q.type === 'open' || (q.parts || []).some(hasOpen);
+// explanation of why choice k is wrong: explicit q.choiceWhy[k], else parsed from "<strong>B</strong> — …" rationales in the solution
+function choiceWhy(q, k) {
+  if (q.choiceWhy && q.choiceWhy[k]) return q.choiceWhy[k];
+  const L = LETTERS[k], sol = q.solution || '';
+  const lab = `<(?:strong|b)>\\s*\\(?[${L}${L.toLowerCase()}]\\)?[.):]?\\s*(?:</(?:strong|b)>)`;
+  const re = new RegExp(lab + `\\s*(?:[—–:-]|is\\s+wrong|\\(wrong\\))?\\s*([\\s\\S]*?)(?=</li>|<br\\s*/?>|</p>|<(?:strong|b)>\\s*\\(?[A-Ha-h]\\)?[.):]?\\s*</(?:strong|b)>)`);
+  const m = sol.match(re); if (!m) return null;
+  // never leak the key: cut anything from "Answer:" / "Correct" onward
+  const t = m[1].replace(/^\s*[—–:-]\s*/, '').split(/(?:<(?:strong|b)>\s*)?(?:Answer\s*:|The answer is|Correct answer|So the answer)/i)[0].trim();
+  return plain(t).length > 10 ? t : null;
+}
+// key points of a model answer (its list items) → self-grading rubric
+function rubricOf(q) {
+  if (Array.isArray(q.rubric) && q.rubric.length) return q.rubric;
+  const items = [...String(q.modelAnswer || q.solution || '').matchAll(/<li>([\s\S]*?)<\/li>/g)].map(m => m[1].trim()).filter(x => plain(x).length > 3);
+  return items.length >= 2 && items.length <= 8 ? items : null;
+}
+function numericSlip(q, raw) {
+  const p = parseNum(raw); if (!p) return 'That doesn\'t look like a number. Use digits, a decimal point, and optionally %.';
+  const a = Number(q.answer), close = v => Math.abs(v - a) <= Math.max(Math.abs(a) * 0.02, 1e-9);
+  if (close(-p.v)) return 'Check your sign: the magnitude is right.';
+  if (close(p.v * 100) || close(p.v / 100)) return `Check your units: ${q.format === 'percent' ? 'answer in percent (e.g. 5.4 for 5.4%)' : q.format === 'decimal' ? 'answer as a decimal (e.g. 0.054)' : 'the scale is off by 100×'}.`;
+  if (close(p.v * 10) || close(p.v / 10)) return 'Off by a factor of 10: check a decimal place.';
+  return null;
+}
 // grade ignoring written (open) parts; null if nothing is auto-gradable
 function gradeAuto(q, r) {
   if (q.type === 'open') return null;
@@ -636,7 +711,7 @@ const answeredAuto = (q, r) => q.type === 'open' ? true : q.type === 'group' ? q
    mode: 'practice' (check/hints/solution, retries) | 'exam' (just inputs) | 'review' (read-only + solution + self-grade) */
 function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGrade, label } = {}) {
   const root = document.createElement('div'); root.className = 'card qcard';
-  const st = { r: resp !== undefined && resp !== null ? structuredClone(resp) : initResp(q), checked: mode === 'review', hints: 0, sol: mode === 'review', tries: 0, wrong: {}, first: null, done: false };
+  const st = { r: resp !== undefined && resp !== null ? structuredClone(resp) : initResp(q), checked: mode === 'review', hints: 0, sol: mode === 'review', tries: 0, wrong: {}, first: null, done: false, phints: {}, psol: {}, reasons: {} };
   function getAt(path) { let o = st.r; for (const k of path) o = o == null ? null : o[k]; return o; }
   function setAt(path, v) {
     if (!path.length) { st.r = v; return; }
@@ -656,7 +731,7 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
       }).join('')}</div>`;
       case 'numeric': {
         const cls = (checked || reveal) && String(r ?? '').trim() ? (g ? 'right' : 'wrong') : '';
-        return `<div class="numwrap ${cls}"><input class="field" inputmode="decimal" autocomplete="off" data-act="num" data-path="${key}" value="${esc(r ?? '')}" placeholder="${qq.format === 'percent' ? 'e.g. 5.4 or 5.4%' : qq.format === 'dollars' ? 'e.g. 1050.25' : 'Your answer'}" ${mode === 'review' ? 'disabled' : ''}>
+        return `<div class="numwrap ${cls}"><input class="field" inputmode="decimal" autocomplete="off" data-act="num" data-path="${key}" value="${esc(r ?? '')}" placeholder="${qq.format === 'percent' ? 'percent, e.g. 5.4' : qq.format === 'dollars' ? 'dollars, e.g. 1050.25' : qq.format === 'decimal' ? 'decimal, e.g. 0.136' : qq.format === 'years' ? 'years, e.g. 4.62' : 'e.g. 2.38'}" ${mode === 'review' ? 'disabled' : ''}>
           ${qq.format === 'percent' ? '<span class="unit">%</span>' : qq.format === 'years' ? '<span class="unit">years</span>' : ''}
           ${reveal || (checked && g) ? `<span class="chip ${g ? 'good' : 'bad'}">Answer: ${esc(fmtAnswer(qq))}</span>` : ''}</div>`;
       }
@@ -669,17 +744,27 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
         return `<div class="tfrow"><div>${rich(s.text)}</div><div class="tfbtns">${[true, false].map(v => {
           let cls = rv === v ? 'sel' : ''; if ((checked || reveal) && rv === v) cls = v === s.answer ? 'right' : 'wrong'; if (reveal && v === s.answer) cls = 'right';
           return `<button class="${cls}" data-act="tfg" data-path="${key}" data-k="${k}" data-v="${v}" ${mode === 'review' ? 'disabled' : ''}>${v ? 'TRUE' : 'FALSE'}</button>`;
-        }).join('')}</div>${checked || reveal ? `<div class="tfexp callout ${rv === s.answer ? 'tip' : 'warn'}"><b>${s.answer ? 'TRUE' : 'FALSE'}.</b> ${tex(s.explanation)}</div>` : ''}</div>`;
+        }).join('')}</div>
+        ${mode === 'practice' && !st.done && !st.sol ? `<input class="field tfwhy" data-act="why" data-path="${key}" data-k="${k}" value="${esc(st.reasons[key + ':' + k] || '')}" placeholder="Because… (justify in a few words: that's half the points)">` : ''}
+        ${(mode === 'practice' ? (st.done || st.sol) : (checked || reveal)) ? `<div class="tfexp callout ${rv === s.answer ? 'tip' : 'warn'}">${st.reasons[key + ':' + k] ? `<div class="small muted">Your reason: ${esc(st.reasons[key + ':' + k])}</div>` : ''}<b>${s.answer ? 'TRUE' : 'FALSE'}.</b> ${tex(s.explanation)}</div>` : ''}</div>`;
       }).join('')}</div>`;
       case 'open': {
-        const rr = r || { text: '', self: null }, showModel = reveal || rr.revealed;
+        const rr = r || { text: '', self: null }, showModel = reveal || rr.revealed, rub = rubricOf(qq);
+        const grading = rub ? `<div class="rubric"><div class="lbl">Grade yourself: tick each key point your answer included</div>${rub.map((it, i) => `<label class="rub"><input type="checkbox" data-act="rub" data-path="${key}" data-i="${i}" ${(rr.rub || [])[i] ? 'checked' : ''}> <span>${tex(it)}</span></label>`).join('')}
+            <div class="row" style="margin-top:6px"><button class="btn sm" data-act="rubscore" data-path="${key}">${icon('check')} Score it</button>${rr.self != null ? `<span class="chip ${rr.self >= 0.99 ? 'good' : rr.self > 0 ? 'warn' : 'bad'}">${pct(rr.self)}%</span>` : ''}</div></div>`
+          : `<div class="selfgrade"><span class="small muted" style="align-self:center">Compare to the model answer. How did you do?</span>${[[1, 'Nailed it'], [0.5, 'Partly'], [0, 'Missed it']].map(([v, t]) => `<button class="btn sm ${rr.self === v ? '' : 'secondary'}" data-act="self" data-path="${key}" data-v="${v}">${t}</button>`).join('')}</div>`;
         return `<textarea class="field" data-act="open" data-path="${key}" placeholder="Write your answer like you would on the exam (key terms + reasoning)…" ${mode === 'review' && onSelfGrade == null ? 'disabled' : ''}>${esc(rr.text || '')}</textarea>
-          ${mode !== 'exam' ? (showModel ? `<div class="solbox"><div class="lbl">Model answer</div>${rich(qq.modelAnswer || qq.solution || '')}</div>
-            <div class="selfgrade"><span class="small muted" style="align-self:center">How did you do?</span>${[[1, 'Nailed it'], [0.5, 'Partly'], [0, 'Missed it']].map(([v, t]) => `<button class="btn sm ${rr.self === v ? '' : 'secondary'}" data-act="self" data-path="${key}" data-v="${v}">${t}</button>`).join('')}</div>`
-            : `<div class="qactions"><button class="btn secondary sm" data-act="reveal" data-path="${key}">${icon('eye')} Show model answer</button></div>`) : ''}`;
+          ${mode !== 'exam' ? (showModel ? `<div class="solbox"><div class="lbl">Model answer</div>${rich(qq.modelAnswer || qq.solution || '')}</div>${grading}`
+            : `<div class="qactions"><button class="btn secondary sm" data-act="reveal" data-path="${key}">${icon('eye')} Show model answer</button><label class="small muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-act="paper" data-path="${key}" ${rr.paper ? 'checked' : ''}> I answered on paper</label></div>`) : ''}`;
       }
-      case 'group': return qq.parts.map((p, k) => `<div class="part"><div class="plabel">Part ${String.fromCharCode(97 + k)}</div>${rich(p.prompt || '')}${inputs(p, [...path, k])}
-        ${(mode === 'review' || st.sol) && p.type !== 'open' && p.solution ? `<details class="small" style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-weight:700">Part ${String.fromCharCode(97 + k)} solution</summary>${rich(p.solution)}</details>` : ''}</div>`).join('');
+      case 'group': return qq.parts.map((p, k) => {
+        const pk = [...path, k].join('.'), nh = st.phints[pk] || 0, ph = p.hints || [], L = String.fromCharCode(97 + k);
+        const showSol = (mode === 'review' || st.sol || st.psol[pk]) && p.type !== 'open' && p.solution;
+        return `<div class="part"><div class="plabel">Part ${L}</div>${rich(p.prompt || '')}${inputs(p, [...path, k])}
+        ${mode === 'practice' ? ph.slice(0, nh).map((h, i) => `<div class="hintbox"><div class="lbl">Part ${L} · hint ${i + 1}</div>${rich(h)}</div>`).join('') : ''}
+        ${mode === 'practice' && !st.done && !st.sol ? `<div class="row" style="margin-top:6px">${ph.length > nh ? `<button class="btn ghost sm" data-act="phint" data-path="${pk}">${icon('bulb')} Hint for part ${L}</button>` : ''}${p.type !== 'open' && p.solution && !st.psol[pk] && (st.tries > 0 || nh >= ph.length && ph.length) ? `<button class="btn ghost sm" data-act="psol" data-path="${pk}">${icon('eye')} Part ${L} solution</button>` : ''}</div>` : ''}
+        ${showSol ? (mode === 'practice' && st.psol[pk] && !st.sol ? `<div class="solbox"><div class="lbl">Part ${L} solution</div>${rich(p.solution)}</div>` : `<details class="small" style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-weight:700">Part ${L} solution</summary>${rich(p.solution)}</details>`) : ''}</div>`;
+      }).join('');
     }
     return '';
   }
@@ -692,13 +777,14 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
       <div class="prompt">${rich(q.prompt || '')}</div>
       ${inputs(q, [])}
       ${mode === 'practice' ? `
-        ${st.feedback ? `<div class="feedback ${st.feedback.cls}">${icon(st.feedback.cls === 'ok' ? 'check' : st.feedback.cls === 'bad' ? 'x' : 'bulb')}<span>${st.feedback.msg}</span></div>` : ''}
+        ${st.feedback ? `<div class="feedback ${st.feedback.cls}" role="status" aria-live="polite">${icon(st.feedback.cls === 'ok' ? 'check' : st.feedback.cls === 'bad' ? 'x' : 'bulb')}<span>${st.feedback.msg}</span></div>` : ''}
+        ${st.feedback && st.feedback.why ? `<div class="whybox"><div class="lbl">Why ${st.feedback.whyLabel} is tempting but wrong</div>${rich(st.feedback.why)}</div>` : ''}
         ${(q.hints || []).slice(0, st.hints).map((h, k) => `<div class="hintbox"><div class="lbl">Hint ${k + 1}</div>${rich(h)}</div>`).join('')}
         ${st.sol && q.solution && !showOpenOnly ? `<div class="solbox"><div class="lbl">Worked solution</div>${rich(q.solution)}</div>` : ''}
         <div class="qactions">
           ${!showOpenOnly && !st.done && gradeAuto(q, initResp(q)) !== null ? `<button class="btn" data-act="check">${icon('check')} Check</button>` : ''}
           ${(q.hints || []).length > st.hints && !st.done && !st.sol ? `<button class="btn secondary" data-act="hint">${icon('bulb')} Get a hint</button>` : ''}
-          ${!st.sol && !showOpenOnly ? `<button class="btn ghost" data-act="sol">${icon('eye')} Show solution</button>` : ''}
+          ${!st.sol && !showOpenOnly ? (st.tries > 0 || st.done || ((q.hints || []).length && st.hints >= q.hints.length) ? `<button class="btn ghost" data-act="sol">${icon('eye')} Show solution</button>` : `<span class="small muted">Solution unlocks after your first try</span>`) : ''}
           <span class="spacer"></span><span id="qnext"></span>
         </div>` : ''}
       ${mode === 'review' && q.solution && !showOpenOnly ? `<div class="solbox"><div class="lbl">Worked solution</div>${rich(q.solution)}</div>` : ''}
@@ -720,7 +806,20 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
     if (act === 'mc') { if (mode === 'practice' && st.done) return; setAt(path, +b.dataset.k); st.checked = false; st.feedback = null; emit(); render(); }
     else if (act === 'tf') { if (mode === 'practice' && st.done) return; setAt(path, b.dataset.v === 'true'); st.checked = false; st.feedback = null; emit(); render(); }
     else if (act === 'tfg') { if (mode === 'practice' && st.done) return; const arr = getAt(path) || []; arr[+b.dataset.k] = b.dataset.v === 'true'; setAt(path, arr); st.checked = false; st.feedback = null; emit(); render(); }
-    else if (act === 'reveal') { const o = getAt(path) || { text: '', self: null }; o.revealed = true; setAt(path, o); emit(); render(); }
+    else if (act === 'reveal') {
+      const o = getAt(path) || { text: '', self: null };
+      if (mode === 'practice' && words(o.text) < 12 && !o.paper) { toast('Write your answer first (a few sentences), or tick "I answered on paper".'); return; }
+      o.revealed = true; setAt(path, o); emit(); render();
+    }
+    else if (act === 'paper') { const o = getAt(path) || { text: '', self: null }; o.paper = b.checked; setAt(path, o); emit(); return; }
+    else if (act === 'rub') { const o = getAt(path) || { text: '', self: null }; o.rub = o.rub || []; o.rub[+b.dataset.i] = b.checked; setAt(path, o); emit(); return; }
+    else if (act === 'rubscore') {
+      const o = getAt(path) || { text: '', self: null }; let qq = q; for (const k of path) qq = qq.parts[k];
+      const n = (rubricOf(qq) || []).length; o.self = n ? Math.round(((o.rub || []).filter(Boolean).length / n) * 100) / 100 : 0; o.revealed = true;
+      setAt(path, o); emit(); render(); onSelfGrade && onSelfGrade(structuredClone(st.r)); if (mode === 'practice') finishIfDone();
+    }
+    else if (act === 'phint') { st.phints[b.dataset.path] = (st.phints[b.dataset.path] || 0) + 1; render(); }
+    else if (act === 'psol') { st.psol[b.dataset.path] = true; render(); }
     else if (act === 'self') { const o = getAt(path) || { text: '', self: null }; o.self = +b.dataset.v; o.revealed = true; setAt(path, o); emit(); render(); onSelfGrade && onSelfGrade(structuredClone(st.r)); if (mode === 'practice') finishIfDone(); }
     else if (act === 'hint') { st.hints++; render(); }
     else if (act === 'sol') {
@@ -737,7 +836,9 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
       else {
         if (st.tries === 1) onChecked && onChecked({ first: false, solved: false, score: g, revealed: false });
         if (q.type === 'mc') st.wrong[':' + st.r] = true;
-        st.feedback = { cls: 'bad', msg: q.type === 'tfgroup' || q.type === 'group' ? `Partly right (${pct(g)}%). Fix the red ones, or see the solution.` : 'Not quite. Try again, use a hint, or see the solution.' };
+        const why = q.type === 'mc' ? choiceWhy(q, st.r) : null;
+        const slip = q.type === 'numeric' ? numericSlip(q, st.r) : null;
+        st.feedback = { cls: 'bad', msg: q.type === 'tfgroup' || q.type === 'group' ? `Partly right (${pct(g)}%). Fix the red ones and try again${q.type === 'tfgroup' ? ' (explanations appear once you have it right, or open the solution)' : ''}.` : (slip ? `Not quite. ${slip}` : 'Not quite. Try again, use a hint, or see the solution.'), why, whyLabel: q.type === 'mc' ? LETTERS[st.r] : '' };
       }
       render();
     }
@@ -747,6 +848,7 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
     const path = t.dataset.path ? t.dataset.path.split('.').filter(x => x !== '').map(Number) : [];
     if (act === 'num') { setAt(path, t.value); if (st.checked && mode === 'practice' && !st.done) { st.checked = false; st.feedback = null; t.closest('.numwrap')?.classList.remove('right', 'wrong'); } emit(); }
     if (act === 'open') { const o = getAt(path) || { text: '', self: null }; o.text = t.value; setAt(path, o); emit(); }
+    if (act === 'why') st.reasons[t.dataset.path + ':' + t.dataset.k] = t.value;
   });
   root.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.dataset.act === 'num' && mode === 'practice') { e.preventDefault(); $('[data-act="check"]', root)?.click(); } });
   render();
@@ -757,7 +859,15 @@ function QuestionView(q, { mode = 'practice', resp, onResp, onChecked, onSelfGra
 // ============================================================ practice / quiz / mistakes runner
 function viewPractice(c, kind, id, all = false) {
   let qs = [], title = '', back = `#/${c.id}`, u = null, l = null, sub = '';
-  if (kind === 'lesson') {
+  if (kind === 'testout') {
+    ({ u, l } = findLesson(c, id)); if (!l) return viewCourse(c);
+    qs = coreQs(l).slice(); title = `Test out: ${l.title}`; back = `#/${c.id}/unit/${u.id}`;
+    sub = `Unit ${u.num} · get all ${qs.length} right on the first try to skip this lesson`;
+  } else if (kind === 'mixed') {
+    const cp = checkpointsFor(c).find(x => String(x.upto) === String(id)) || checkpointsFor(c).slice(-1)[0];
+    qs = sampleWeighted(mixedPool(c, cp.upto), cp.n); title = cp.title; sub = 'Interleaved retrieval practice · weighted toward what you missed or haven\'t tried';
+    u = null; id = cp.upto;
+  } else if (kind === 'lesson') {
     ({ u, l } = findLesson(c, id)); if (!l) return viewCourse(c);
     const full = (l.practice || []).slice(), core = coreQs(l);
     qs = all || full.length <= core.length ? full : core;
@@ -769,10 +879,13 @@ function viewPractice(c, kind, id, all = false) {
   } else {
     const p = P(c.id), missed = new Set([...Object.entries(p.q).filter(([, r]) => !r.c).map(([k]) => k), ...(p.examMissed || [])]);
     const pool = [...allQuestions(c).map(x => x.q), ...c.exams.flatMap(e => e.questions)];
-    const seenIds = new Set(); qs = pool.filter(q => missed.has(q.id) && !seenIds.has(q.id) && seenIds.add(q.id));
-    title = 'Review my mistakes'; sub = 'Every question you missed on the first try, in one drill';
+    const seenIds = new Set(); const all = pool.filter(q => missed.has(q.id) && !seenIds.has(q.id) && seenIds.add(q.id));
+    const examSet = new Set(p.examMissed || []);
+    all.sort((a, b) => (examSet.has(b.id) - examSet.has(a.id)) || (Math.random() - 0.5));
+    qs = all.slice(0, 12);
+    title = 'Review my mistakes'; sub = `${qs.length} of ${all.length} missed questions this round · exam misses first · a question leaves the list once you get it right first try`;
   }
-  const crumbsArr = [[c.code, `#/${c.id}`], u ? [`Unit ${u.num}`, `#/${c.id}/unit/${u.id}`] : null, [kind === 'quiz' ? 'Quiz' : kind === 'review' ? 'Mistakes' : 'Practice']];
+  const crumbsArr = [[c.code, `#/${c.id}`], u ? [`Unit ${u.num}`, `#/${c.id}/unit/${u.id}`] : null, [kind === 'quiz' ? 'Quiz' : kind === 'review' ? 'Mistakes' : kind === 'mixed' ? 'Mixed review' : kind === 'testout' ? 'Test out' : 'Practice']];
   if (!qs.length) {
     shell(c, crumbsArr, `<div class="page narrow"><div class="card pad empty"><h2>${kind === 'review' ? 'No mistakes yet 🎯' : 'No questions here'}</h2><p>${kind === 'review' ? 'Questions you miss on the first try will collect here so you can drill them before the exam.' : ''}</p><a class="btn" href="${back}">Back</a></div></div>`);
     return;
@@ -799,7 +912,8 @@ function viewPractice(c, kind, id, all = false) {
           streak = first ? streak + 1 : 0;
           if (kind === 'review' && first) { const pp = P(c.id); if (pp.q[q.id]) pp.q[q.id].c = true; pp.examMissed = (pp.examMissed || []).filter(x => x !== q.id); saveP(c.id); }
         }
-        if (kind !== 'review') recordQ(c.id, q.id, first, solved, !first);
+        if (kind !== 'review' && kind !== 'mixed') recordQ(c.id, q.id, first, solved, !first);
+        if (kind === 'mixed') { const pp = P(c.id); const r = pp.q[q.id]; if (r) { r.c = r.c || first; r.t = Date.now(); } else pp.q[q.id] = { c: !!first, s: !!solved, r: !first, t: Date.now() }; saveP(c.id); }
         dots();
       },
     });
@@ -811,18 +925,24 @@ function viewPractice(c, kind, id, all = false) {
     const done = results.filter(r => r != null).length, right = results.filter(r => r >= 0.99).length;
     const score = qs.length ? right / qs.length : 0;
     if (kind === 'quiz') { const p = P(c.id); p.quiz[u.id] = Math.max(p.quiz[u.id] || 0, score); saveP(c.id); }
+    if (kind === 'mixed') { const p = P(c.id); p.checkpoints = p.checkpoints || {}; p.checkpoints[id] = score; saveP(c.id); }
+    let testedOut = false;
+    if (kind === 'testout' && right === qs.length) { l.slides.forEach(s => markSeen(c.id, l.id, s.id)); testedOut = true; }
     const lessons = allLessons(c), li = l ? lessons.findIndex(x => x.id === l.id) : -1, nextL = li >= 0 ? lessons[li + 1] : null;
     const unitIdx = u ? c.units.indexOf(u) : -1, nextU = unitIdx >= 0 ? c.units[unitIdx + 1] : null;
     $('#view').innerHTML = `<div class="page narrow"><div class="card summary-hero">
       <div style="font-size:2.4rem">${score >= 0.8 ? '🏆' : score >= 0.5 ? '💪' : '📚'}</div>
       <div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em">${esc(title)}</div>
       <div class="score">${right}/${qs.length}</div>
-      <p class="muted">${done < qs.length ? `${qs.length - done} skipped · ` : ''}first-try correct ${score >= 0.8 ? '— excellent, you own this.' : score >= 0.5 ? '— solid. Redo the misses below.' : '— rewatch the lesson, then try again.'}</p>
+      <p class="muted">${done < qs.length ? `${qs.length - done} skipped · ` : ''}first-try correct ${kind === 'testout' ? (testedOut ? '— tested out! The lesson is marked done; skim its recap slide if you like.' : '— not quite. Watch the lesson: answering these first already primed you for it.') : score >= 0.8 ? '— excellent, you own this.' : score >= 0.5 ? '— solid. Redo the misses below.' : '— rewatch the lesson, then try again.'}</p>
       <div class="qdots" style="justify-content:center;margin:12px 0">${qs.map((q, k) => `<button class="${results[k] == null ? '' : results[k] >= 0.99 ? 'ok' : 'bad'}" disabled>${k + 1}</button>`).join('')}</div>
       <div class="row" style="justify-content:center;margin-top:10px">
         <button class="btn secondary" id="retry">${icon('redo')} Try again</button>
         ${kind === 'lesson' && !all && (l.practice || []).length > qs.length ? `<a class="btn secondary" href="#/${c.id}/practice/${l.id}/all">${icon('target')} All ${(l.practice || []).length} questions</a>` : ''}
+        ${(kind === 'lesson' && score < 0.5) || (kind === 'testout' && !testedOut) ? `<a class="btn" href="#/${c.id}/learn/${l.id}">${icon('play')} ${kind === 'testout' ? 'Watch the lesson' : 'Rewatch the lesson'}</a>` : ''}
+        ${kind === 'testout' && testedOut && nextL ? `<a class="btn" href="#/${c.id}/learn/${nextL.id}">Next lesson: ${esc(nextL.title)} ${icon('next')}</a>` : ''}
         ${kind === 'lesson' && nextL ? `<a class="btn" href="#/${c.id}/learn/${nextL.id}">Next lesson: ${esc(nextL.title)} ${icon('next')}</a>` : ''}
+        ${kind === 'mixed' ? `<a class="btn" href="#/${c.id}">${icon('home')} Back to the plan</a><a class="btn secondary" href="#/${c.id}/review">Drill my mistakes</a>` : ''}
         ${kind === 'lesson' && !nextL ? `<a class="btn purple" href="#/${c.id}/exams">Practice exams</a>` : ''}
         ${kind === 'quiz' && nextU ? `<a class="btn" href="#/${c.id}/unit/${nextU.id}">Unit ${nextU.num}: ${esc(nextU.title)} ${icon('next')}</a>` : ''}
         ${kind === 'quiz' && !nextU ? `<a class="btn purple" href="#/${c.id}/exams">Practice exams</a>` : ''}
@@ -832,6 +952,16 @@ function viewPractice(c, kind, id, all = false) {
   $('#qdots').onclick = e => { const k = e.target.closest('button')?.dataset.k; if (k != null) { idx = +k; show(); } };
   $('#qprev').onclick = () => { if (idx > 0) { idx--; show(); } };
   $('#qnextb').onclick = () => { if (idx < qs.length - 1) { idx++; show(); } else finish(); };
+  const onKey = e => {
+    if (e.target.closest('input,textarea,select') || e.metaKey || e.ctrlKey || e.altKey || !$('#qslot')) return;
+    const k = e.key.toLowerCase(), choices = $$('#qslot .choices:first-of-type .choice');
+    const i = '123456'.indexOf(k) >= 0 ? '123456'.indexOf(k) : 'abcdef'.indexOf(k);
+    if (i >= 0 && choices[i]) { e.preventDefault(); choices[i].click(); }
+    else if (k === 'enter') { const b = $('#qslot [data-act="check"]'); if (b) { e.preventDefault(); b.click(); } }
+    else if (k === 'n' || k === 'arrowright') { e.preventDefault(); $('#qnextb')?.click(); }
+    else if (k === 'arrowleft') { e.preventDefault(); $('#qprev')?.click(); }
+  };
+  document.addEventListener('keydown', onKey); onCleanup(() => document.removeEventListener('keydown', onKey));
   show();
 }
 
@@ -839,9 +969,11 @@ function viewPractice(c, kind, id, all = false) {
 const KIND = { real: ['Real past final', 'var(--accent4)'], problems: ['Official extra practice', 'var(--accent3)'], mock: ["Trevor's Academy mock", 'var(--accent)'] };
 function examQuestions(e, includeOOS) { return e.questions.filter(q => includeOOS || !q.outOfScope); }
 function examPoints(qs) { return sum(qs.map(q => q.points || 10)); }
+const examKey = (c, eid) => `exam:${c.id}:${eid}`;
+function examSession(c, eid) { const s = store.get(examKey(c, eid)); if (s) return s; const old = store.get('exam:' + c.id); return old && old.examId === eid ? old : null; }
 function viewExams(c) {
-  const p = P(c.id), sess = store.get('exam:' + c.id);
-  const cards = c.exams.map(e => {
+  const p = P(c.id), live = c.exams.map(e => examSession(c, e.id)).filter(s => s && !s.submitted);
+  const cards = c.exams.map(e => { const sess = examSession(c, e.id);
     const att = p.exams.filter(a => a.examId === e.id), best = att.length ? Math.max(...att.map(a => a.pct)) : null;
     const nIn = examQuestions(e, false).length, nOut = e.questions.length - nIn;
     const [kl, kc] = KIND[e.kind] || KIND.mock;
@@ -857,7 +989,8 @@ function viewExams(c) {
   shell(c, [[c.code, `#/${c.id}`], ['Practice exams']], `<div class="page"><div class="with-side">${sideNav(c, null)}<div>
     <h1>Practice exams</h1>
     <p class="muted">The on-screen timer defaults to the official ${c.exam?.minutes || 75} minutes. You can switch to 60 minutes or turn on 1.5× extended time. It never locks you out: when time runs out, it keeps counting your overtime so you know where you stand.</p>
-    ${sess && !sess.submitted ? `<div class="callout exam" style="margin:14px 0">You have an exam in progress: <b>${esc(c.exams.find(e => e.id === sess.examId)?.title || '')}</b>. <a href="#/${c.id}/exam/${sess.examId}">Resume →</a></div>` : ''}
+    ${c.examsNote ? `<div class="callout tip" style="margin:14px 0">${icon('bulb')} ${esc(c.examsNote)}</div>` : ''}
+    ${live.map(sess => `<div class="callout exam" style="margin:14px 0">Exam in progress: <b>${esc(c.exams.find(e => e.id === sess.examId)?.title || '')}</b>. <a href="#/${c.id}/exam/${sess.examId}">Resume →</a></div>`).join('')}
     <div class="grid cols3" style="margin-top:16px">${cards}</div>
     ${hist ? `<div class="section-title"><h2>Your attempts</h2></div><div class="card pad" style="overflow-x:auto"><table class="topic-table"><tbody>${hist}</tbody></table></div>` : ''}
     ${footer()}</div></div></div>`);
@@ -866,10 +999,10 @@ function viewExams(c) {
 // ============================================================ exam runner
 function viewExam(c, eid) {
   const e = c.exams.find(x => x.id === eid); if (!e) return viewExams(c);
-  const skey = 'exam:' + c.id;
-  let sess = store.get(skey);
-  if (sess && sess.examId === eid && !sess.submitted) return runExam(c, e, sess);
-  if (sess && sess.examId === eid && sess.submitted) return examResults(c, e, sess);
+  const skey = examKey(c, eid);
+  let sess = examSession(c, eid);
+  if (sess && !sess.submitted) return runExam(c, e, sess);
+  if (sess && sess.submitted) return examResults(c, e, sess);
   // setup screen
   const base = c.exam?.minutes || 75, nOut = e.questions.filter(q => q.outOfScope).length;
   const opts = { minutes: base, extended: false, mode: e.kind === 'problems' ? 'study' : 'exam', oos: false };
@@ -899,7 +1032,7 @@ function viewExam(c, eid) {
 }
 function elapsed(sess) { return ((sess.pausedAt || sess.submittedAt || Date.now()) - sess.startedAt - sess.pausedMs) / 1000; }
 function runExam(c, e, sess) {
-  const skey = 'exam:' + c.id, save = () => store.set(skey, sess);
+  const skey = examKey(c, e.id), save = () => store.set(skey, sess);
   const qs = sess.qids.map(id => e.questions.find(q => q.id === id)).filter(Boolean);
   shell(c, [[c.code, `#/${c.id}`], ['Exams', `#/${c.id}/exams`], [e.title]], `<div class="page">
     <div class="examhead"><b style="font-family:var(--display)">${esc(e.title)}</b><span class="chip">${sess.mode === 'study' ? 'Study mode' : 'Exam mode'}</span>${sess.extended ? '<span class="chip high">1.5× time</span>' : ''}
@@ -973,33 +1106,57 @@ function recordAttempt(c, e, sess) {
   p.examMissed = [...new Set([...(p.examMissed || []), ...s.qs.filter(q => s.per[q.id] != null && s.per[q.id] < 0.99).map(q => q.id)])];
   saveP(c.id);
 }
+// map an exam question to the lesson that teaches it: shared topic tags, rarer tags count more
+const tagIndexCache = {};
+function lessonForQuestion(c, q) {
+  let idx = tagIndexCache[c.id];
+  if (!idx) {
+    idx = { tag: {}, n: 0 };
+    c.units.forEach(u => u.lessons.forEach(l => [...(l.practice || []), ...(u.unitQuiz || []).filter(() => u.lessons[0] === l)].forEach(x => walkQ(x, y => (y.tags || []).forEach(t => { const m = idx.tag[t] || (idx.tag[t] = {}); m[l.id] = (m[l.id] || 0) + 1; })))));
+    tagIndexCache[c.id] = idx;
+  }
+  const score = {};
+  const tags = new Set(); walkQ(q, y => (y.tags || []).forEach(t => tags.add(t)));
+  tags.forEach(t => { const m = idx.tag[t]; if (!m) return; const spread = Object.keys(m).length; Object.entries(m).forEach(([lid, n]) => { score[lid] = (score[lid] || 0) + (1 + Math.log(1 + n)) / spread; }); });
+  const best = Object.entries(score).sort((a, b) => b[1] - a[1])[0];
+  return best ? findLesson(c, best[0]) : {};
+}
 function examResults(c, e, sess) {
   const s = scoreExam(e, sess), el = elapsed(sess), over = el - sess.limit;
-  const topics = {};
-  s.qs.forEach(q => { const t = (q.tags || ['general'])[0]; const o = topics[t] || (topics[t] = { got: 0, max: 0 }); o.max += q.points || 10; o.got += (s.per[q.id] || 0) * (q.points || 10); });
-  const trows = Object.entries(topics).sort((a, b) => a[1].got / a[1].max - b[1].got / b[1].max).map(([t, o]) => `<tr><td>${esc(t.replace(/-/g, ' '))}</td><td style="width:45%"><div class="bar"><i style="width:${pct(o.got / o.max)}%;background:${o.got / o.max >= 0.7 ? 'var(--accent2)' : o.got / o.max >= 0.4 ? 'var(--accent3)' : 'var(--bad)'}"></i></div></td><td class="num">${Math.round(o.got * 10) / 10}/${o.max}</td></tr>`).join('');
+  const groups = {};
+  s.qs.forEach((q, k) => { const { u, l } = lessonForQuestion(c, q); const key = l ? l.id : '_'; const o = groups[key] || (groups[key] = { u, l, got: 0, max: 0, qn: [] }); o.max += q.points || 10; o.got += (s.per[q.id] || 0) * (q.points || 10); o.qn.push(k + 1); });
+  const trows = Object.values(groups).sort((a, b) => a.got / a.max - b.got / b.max).map(o => { const f = o.got / o.max;
+    return `<tr><td>${o.l ? `<b>Unit ${o.u.num}:</b> ${esc(o.l.title)}` : 'Other'}<div class="small muted">Q${o.qn.join(', Q')}</div></td><td style="width:30%"><div class="bar"><i style="width:${pct(f)}%;background:${f >= 0.7 ? 'var(--accent2)' : f >= 0.4 ? 'var(--accent3)' : 'var(--bad)'}"></i></div></td><td class="num">${Math.round(o.got * 10) / 10}/${o.max}</td>
+      <td class="num" style="white-space:nowrap">${o.l && f < 0.99 ? `<a class="btn ghost sm" href="#/${c.id}/learn/${o.l.id}">${icon('play')} Rewatch</a><a class="btn ghost sm" href="#/${c.id}/practice/${o.l.id}/all">${icon('target')} Practice</a>` : ''}</td></tr>`; }).join('');
   shell(c, [[c.code, `#/${c.id}`], ['Exams', `#/${c.id}/exams`], [e.title, null], ['Results']], `<div class="page"><div class="qwrap">
     <div class="card summary-hero"><div class="muted small" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em">${esc(e.title)} · results</div>
       <div class="score" id="bigscore">${s.pct}%</div><div class="muted" id="ptsline">${s.score} / ${s.max} points${s.pending ? ` · <b>${s.pending}</b> written answer${s.pending > 1 ? 's' : ''} to self-grade below` : ''}</div>
       <div class="row" style="justify-content:center;margin-top:12px"><span class="chip">${icon('clock')} ${fmtClock(el)} used of ${fmtClock(sess.limit)}</span>${over > 0 ? `<span class="chip bad">+${fmtClock(over)} overtime</span>` : `<span class="chip good">Finished in time</span>`}${sess.extended ? '<span class="chip high">1.5× time</span>' : ''}</div>
       <div class="row" style="justify-content:center;margin-top:16px"><button class="btn purple" id="retake">${icon('redo')} Retake</button><a class="btn secondary" href="#/${c.id}/review">Drill my mistakes</a><a class="btn ghost" href="#/${c.id}/exams">All exams</a></div></div>
-    <div class="section-title"><h2>By topic</h2><span class="muted small">weakest first: review these units tonight</span></div>
-    <div class="card pad"><table class="topic-table"><tbody>${trows}</tbody></table></div>
-    <div class="section-title"><h2>Question review</h2></div><div class="grid" id="rev"></div>${footer()}</div></div>`);
+    <div class="section-title"><h2>By lesson</h2><span class="muted small">weakest first: rewatch these, then practice similar questions</span></div>
+    <div class="card pad" style="overflow-x:auto"><table class="topic-table"><tbody>${trows}</tbody></table></div>
+    <div class="section-title"><h2>Question review</h2><span class="spacer"></span><div class="seg" id="rf"><button data-v="need" class="on">Needs attention</button><button data-v="all">All</button></div></div><div class="grid" id="rev"></div>${footer()}</div></div>`);
   const rev = $('#rev');
+  const needs = q => { const g = s.per[q.id]; return g == null || g < 0.99 || sess.flags[q.id]; };
+  const applyFilter = v => { $$('#rev > .qcard').forEach(el => { el.style.display = v === 'all' || el.dataset.need === '1' ? '' : 'none'; }); $$('#rf button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); };
   s.qs.forEach((q, k) => {
     const g = s.per[q.id];
     const head = document.createElement('div'); head.className = 'rhead';
     head.innerHTML = `<b>Q${k + 1}</b>${g == null ? '<span class="chip warn">Self-grade</span>' : g >= 0.99 ? '<span class="chip good">Correct</span>' : g > 0 ? `<span class="chip warn">Partial ${pct(g)}%</span>` : '<span class="chip bad">Missed</span>'}<span class="pts">${Math.round((g || 0) * (q.points || 10) * 10) / 10}/${q.points || 10}</span>`;
     const v = QuestionView(q, {
       mode: 'review', resp: sess.resp[q.id] ?? initResp(q),
-      onSelfGrade: r => { sess.resp[q.id] = r; store.set('exam:' + c.id, sess); recordAttempt(c, e, sess); const ns = scoreExam(e, sess); $('#bigscore').textContent = ns.pct + '%'; $('#ptsline').innerHTML = `${ns.score} / ${ns.max} points${ns.pending ? ` · <b>${ns.pending}</b> to self-grade` : ''}`; },
+      onSelfGrade: r => { sess.resp[q.id] = r; store.set(examKey(c, e.id), sess); recordAttempt(c, e, sess); const ns = scoreExam(e, sess); $('#bigscore').textContent = ns.pct + '%'; $('#ptsline').innerHTML = `${ns.score} / ${ns.max} points${ns.pending ? ` · <b>${ns.pending}</b> to self-grade` : ''}`; },
     });
     v.prepend(head);
     if (sess.scratch[q.id]) { const d = document.createElement('details'); d.className = 'scratch'; d.innerHTML = `<summary>Your scratch work</summary><div class="callout" style="white-space:pre-wrap">${esc(sess.scratch[q.id])}</div>`; v.appendChild(d); }
+    const { l: tl } = lessonForQuestion(c, q);
+    if (tl && (g == null || g < 0.99)) { const a = document.createElement('div'); a.className = 'row small'; a.style.marginTop = '10px'; a.innerHTML = `<span class="muted">Taught in:</span> <a href="#/${c.id}/learn/${tl.id}">${esc(tl.title)}</a>`; v.appendChild(a); }
+    v.dataset.need = needs(q) ? '1' : '0';
     rev.appendChild(v);
   });
-  $('#retake').onclick = () => { store.del('exam:' + c.id); route(); };
+  applyFilter(s.qs.some(needs) ? 'need' : 'all');
+  $('#rf').onclick = ev => { const b = ev.target.closest('button'); if (b) applyFilter(b.dataset.v); };
+  $('#retake').onclick = () => { store.del(examKey(c, e.id)); store.del('exam:' + c.id); route(); };
 }
 
 // ============================================================ cheat sheet
@@ -1076,7 +1233,7 @@ function openSettings(c) {
   $('#stest', back).onclick = () => { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance("Hi! This is how your lessons will sound. Let's ace this final."); const v = pickVoice(); if (v) u.voice = v; u.rate = settings.rate; speechSynthesis.speak(u); };
   $('#srate', back).onchange = e => { settings.rate = +e.target.value; saveSettings(); };
   $('#sauto', back).onchange = e => { settings.autoAdvance = e.target.checked; saveSettings(); };
-  if ($('#sreset', back)) $('#sreset', back).onclick = () => { if (confirm(`Reset all ${c.code} progress on this device? This can't be undone.`)) { store.del('p:' + c.id); store.del('exam:' + c.id); delete progCache[c.id]; close(); route(); toast('Progress reset'); } };
+  if ($('#sreset', back)) $('#sreset', back).onclick = () => { if (confirm(`Reset all ${c.code} progress on this device? This can't be undone.`)) { store.del('p:' + c.id); store.del('exam:' + c.id); c.exams.forEach(x => store.del(examKey(c, x.id))); delete progCache[c.id]; close(); route(); toast('Progress reset'); } };
   $('#slock', back).onclick = () => { store.del('key'); location.reload(); };
   const onEsc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); } };
   document.addEventListener('keydown', onEsc);

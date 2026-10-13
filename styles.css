@@ -411,6 +411,26 @@ textarea.field { min-height: 110px; resize: vertical; }
 .cheatsheet table { border-collapse: collapse; }
 .cheatsheet td, .cheatsheet th { border: 1px solid #bbb; padding: 1px 4px; }
 
+/* ---------- teaching additions ---------- */
+.whybox { margin-top: 10px; padding: 12px 16px; border-radius: 12px; background: var(--bad-soft); border-left: 4px solid var(--bad); animation: stepIn .25s ease; }
+.whybox .lbl, .rubric .lbl { font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 800; color: var(--bad); margin-bottom: 4px; }
+.rubric { margin-top: 12px; padding: 14px 16px; border-radius: 12px; background: var(--surface2); border: 1px solid var(--line); }
+.rubric .lbl { color: var(--accent); }
+.rub { display: flex; gap: 10px; align-items: flex-start; padding: 5px 0; cursor: pointer; }
+.rub input { margin-top: 4px; flex: none; width: 18px; height: 18px; accent-color: var(--accent2); }
+.tfwhy { grid-column: 1 / -1; padding: 8px 12px; font-size: .93rem; }
+.plan-row.cp { background: var(--warn-soft); border-style: dashed; }
+.yourturn { position: absolute; left: 5cqw; right: 5cqw; bottom: 1.6cqw; padding: .9cqw 1.4cqw; border-radius: 1cqw; background: var(--accent); color: #fff; font-weight: 700; font-size: 1.5cqw; display: flex; gap: .8cqw; align-items: center; animation: stepIn .3s ease; z-index: 2; }
+@media (max-width: 760px) { .yourturn { position: static; margin-top: 12px; font-size: 14px; padding: 10px 12px; border-radius: 10px; } }
+button:focus-visible, a:focus-visible, .choice:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+.choice.right .letter::after { content: "✓"; position: absolute; }
+.choice.right .letter, .choice.wrong .letter { position: relative; font-size: 0; }
+.choice.right .letter::before { content: "✓"; font-size: .95rem; }
+.choice.wrong .letter::before { content: "✗"; font-size: .95rem; }
+.choice.right .letter::after { content: none; }
+.qdots button.ok::after { content: "✓"; font-size: .7em; margin-left: 1px; }
+.qdots button.bad::after { content: "✗"; font-size: .7em; margin-left: 1px; }
+
 /* ---------- print-exact sheet viewer ---------- */
 .sheet-pages { display: grid; gap: 22px; }
 .sheet-page { margin: 0; background: #fff; border-radius: 6px; box-shadow: var(--shadow-lg); overflow: hidden; position: relative; display: grid; place-items: center; }

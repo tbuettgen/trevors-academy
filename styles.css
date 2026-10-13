@@ -443,6 +443,8 @@ button:focus-visible, a:focus-visible, .choice:focus-visible, input:focus-visibl
 .tutor-sugg { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 12px 8px; }
 .tutor-form { display: flex; gap: 8px; padding: 0 12px 8px; align-items: flex-end; }
 .tutor-form textarea { resize: none; min-height: 44px; max-height: 120px; }
+.tutor .mic.rec { color: #fff; background: var(--bad); animation: pulse 1.4s infinite; }
+.tutor.voice .tutor-head { background: linear-gradient(90deg, var(--accent-soft), transparent); }
 .tutor-foot { font-size: .72rem; color: var(--muted); padding: 0 16px 10px; }
 @media (max-width: 600px) { .tutor { right: 0; bottom: 0; width: 100vw; height: 78vh; border-radius: 18px 18px 0 0; } }
 

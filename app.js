@@ -57,6 +57,8 @@ const ICONS = {
   bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
   trophy: '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',
   sheet: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="14" y2="17"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>',
+  headset: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="2.5" y="14" width="4" height="7" rx="1.5"/><rect x="17.5" y="14" width="4" height="7" rx="1.5"/>',
   pausec: '<circle cx="12" cy="12" r="9"/><line x1="10" y1="9" x2="10" y2="15"/><line x1="14" y1="9" x2="14" y2="15"/>',
 };
 const icon = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
@@ -1269,8 +1271,43 @@ function mdLite(t) {
   });
   flush(); return tex(out.join(''));
 }
+// ---- voice: speech in (Web Speech recognition) and speech out (browser voices)
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const voiceIn = !!SR, voiceOut = !!window.speechSynthesis;
+let recog = null;
+function speakable(t) {
+  return String(t).replace(/\\\(|\\\)|\\\[|\\\]/g, ' ').replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, '$1 over $2').replace(/\\(sigma|beta|alpha|rho|mu|omega|Delta|delta|pi|lambda)/g, '$1')
+    .replace(/\^2/g, ' squared').replace(/_\{?([a-z0-9]+)\}?/gi, ' $1').replace(/\\[a-z]+/gi, ' ').replace(/[{}$*`#]/g, '').replace(/\s*\n+\s*/g, '. ').replace(/\s{2,}/g, ' ').trim();
+}
+function speakReply(text, onDone) {
+  if (!voiceOut) return onDone && onDone();
+  speechSynthesis.cancel();
+  const parts = speakable(text).match(/[^.!?]+[.!?]*/g) || [];
+  let i = 0;
+  const next = () => {
+    if (!tutorState || !tutorState.voice || i >= parts.length) return onDone && onDone();
+    const u = new SpeechSynthesisUtterance(parts[i++].trim()); const v = pickVoice(); if (v) { u.voice = v; u.lang = v.lang; } u.rate = Math.min(1.3, settings.rate || 1);
+    u.onend = next; u.onerror = next; speechSynthesis.speak(u);
+  };
+  next();
+}
+function listen(c, u) {
+  if (!voiceIn) { toast('Voice input needs Chrome, Edge or Safari.'); return; }
+  if (recog) { recog.stop(); return; }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  recog = new SR(); recog.lang = 'en-US'; recog.interimResults = true; recog.continuous = false;
+  const tin = $('#tin'), mic = $('#tmic'); let final = '';
+  mic && mic.classList.add('rec'); if (tin) tin.placeholder = 'Listening… speak your question';
+  recog.onresult = e => { let interim = ''; for (const r of e.results) { if (r.isFinal) final = r[0].transcript; else interim += r[0].transcript; } if (tin) tin.value = final || interim; };
+  recog.onerror = e => { if (e.error === 'not-allowed') toast('Microphone permission was blocked. Allow it in the browser to talk to the tutor.'); };
+  recog.onend = () => {
+    recog = null; mic && mic.classList.remove('rec'); if (tin) tin.placeholder = 'Ask anything about this…';
+    const q = (tin && tin.value || '').trim(); if (q) { tin.value = ''; askTutor(c, u, q); }
+  };
+  try { recog.start(); } catch { recog = null; }
+}
 let tutorState = null;
-function closeTutor() { const d = $('#tutor'); if (d) d.remove(); if (tutorState) tutorState.abort?.abort(); tutorState = null; }
+function closeTutor() { const d = $('#tutor'); if (d) d.remove(); if (tutorState) tutorState.abort?.abort(); tutorState = null; if (recog) { recog.abort(); recog = null; } if (window.speechSynthesis) speechSynthesis.cancel(); }
 function openTutor(c, u, focus) {
   if (!tutorOn()) { toast('The tutor is not enabled on this site yet.'); return; }
   if (!u) return;
@@ -1279,13 +1316,19 @@ function openTutor(c, u, focus) {
   let d = $('#tutor');
   if (!d) {
     d = document.createElement('aside'); d.id = 'tutor'; d.className = 'tutor'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Ask the tutor');
-    d.innerHTML = `<div class="tutor-head">${icon('bulb')}<b>Ask the tutor</b><span class="chip">${esc(u.title.slice(0, 34))}</span><span class="spacer"></span><button class="icon-btn" id="tclose" aria-label="Close">${icon('x')}</button></div>
+    d.innerHTML = `<div class="tutor-head">${icon('bulb')}<b>Ask the tutor</b><span class="chip">${esc(u.title.slice(0, 34))}</span><span class="spacer"></span>${voiceIn && voiceOut ? `<button class="icon-btn" id="tvoice" title="Voice mode: talk back and forth, answers read aloud" aria-label="Voice mode">${icon('headset')}</button>` : ''}<button class="icon-btn" id="tclose" aria-label="Close">${icon('x')}</button></div>
       <div class="tutor-focus" id="tfocus"></div><div class="tutor-log" id="tlog"></div>
       <div class="tutor-sugg" id="tsugg"></div>
-      <form class="tutor-form" id="tform"><textarea class="field" id="tin" rows="2" placeholder="Ask anything about this…"></textarea><button class="btn" id="tsend">${icon('next')}</button></form>
-      <div class="tutor-foot">Claude (Sonnet 5.5) answers from this unit's material. It can make mistakes; check against the slides.</div>`;
+      <form class="tutor-form" id="tform"><textarea class="field" id="tin" rows="2" placeholder="Ask anything about this…"></textarea>${voiceIn ? `<button type="button" class="icon-btn mic" id="tmic" title="Ask by voice" aria-label="Ask by voice">${icon('mic')}</button>` : ''}<button class="btn" id="tsend">${icon('next')}</button></form>
+      <div class="tutor-foot">Claude (Sonnet 5.5) answers from this unit's material. It can make mistakes; check against the slides.${voiceIn ? ' Voice input is transcribed by your browser.' : ''}</div>`;
     document.body.appendChild(d);
     $('#tclose').onclick = closeTutor;
+    if ($('#tmic')) $('#tmic').onclick = () => listen(c, u);
+    if ($('#tvoice')) $('#tvoice').onclick = () => {
+      tutorState.voice = !tutorState.voice; $('#tvoice').classList.toggle('on', tutorState.voice);
+      $('#tutor').classList.toggle('voice', tutorState.voice);
+      if (tutorState.voice) { toast('Voice mode on: ask out loud, answers are read back.'); listen(c, u); } else { if (recog) recog.abort(); speechSynthesis.cancel(); }
+    };
     $('#tform').onsubmit = ev => { ev.preventDefault(); const v = $('#tin').value.trim(); if (v) { $('#tin').value = ''; askTutor(c, u, v); } };
     $('#tin').addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); $('#tform').requestSubmit(); } });
   }
@@ -1307,7 +1350,8 @@ async function askTutor(c, u, text) {
   const S = tutorState; if (!S || S.busy) return;
   const f = S.focus;
   const ctx = f ? `[The student is looking at ${f.kind === 'question' ? 'this practice question' : 'this slide'}]\n${f.text}\n${f.kind === 'question' ? (f.attempted ? '[They have already attempted it.]' : '[They have NOT attempted it yet: hints only, no final answer.]') : ''}\n\n` : '';
-  S.msgs.push({ role: 'user', content: ctx + text, shown: text });
+  const vi = S.voice ? '\n\n[Voice mode: the answer will be read aloud. Reply in 2-4 short conversational sentences, no LaTeX, symbols, lists or formatting; say numbers and formulas in words.]' : '';
+  S.msgs.push({ role: 'user', content: ctx + text + vi, shown: text });
   const reply = { role: 'assistant', content: '' }; S.msgs.push(reply); S.busy = true; renderTutorLog();
   $('#tsend') && ($('#tsend').disabled = true);
   try {
@@ -1330,7 +1374,10 @@ async function askTutor(c, u, text) {
     if (e.name === 'AbortError' || /abort/i.test(e.message || '')) return;
     const st = e.status;
     reply.content = st === 401 ? 'The tutor key was rejected (invalid or revoked).' : st === 429 ? 'The tutor is busy (rate or spend limit reached). Try again in a minute.' : st >= 500 ? 'Claude is temporarily unavailable. Try again shortly.' : 'Could not reach the tutor: ' + (e.message || 'network error');
-  } finally { S.busy = false; $('#tsend') && ($('#tsend').disabled = false); renderTutorLog(); }
+  } finally {
+    S.busy = false; $('#tsend') && ($('#tsend').disabled = false); renderTutorLog();
+    if (S.voice && tutorState === S && reply.content) speakReply(reply.content, () => { if (tutorState === S && S.voice && !S.busy) listen(c, u); });
+  }
 }
 
 // ============================================================ settings

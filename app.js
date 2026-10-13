@@ -59,6 +59,7 @@ const ICONS = {
   sheet: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="14" y2="17"/>',
   mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>',
   headset: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="2.5" y="14" width="4" height="7" rx="1.5"/><rect x="17.5" y="14" width="4" height="7" rx="1.5"/>',
+  sigma: '<path d="M18 5V4H6l6 8-6 8h12v-1"/>',
   pausec: '<circle cx="12" cy="12" r="9"/><line x1="10" y1="9" x2="10" y2="15"/><line x1="14" y1="9" x2="14" y2="15"/>',
 };
 const icon = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
@@ -80,7 +81,7 @@ const plain = html => String(html ?? '').replace(/<[^>]+>/g, ' ').replace(/\\\(|
 
 // ============================================================ crypto
 const b64 = { dec: s => Uint8Array.from(atob(s), c => c.charCodeAt(0)), enc: u8 => btoa(String.fromCharCode(...u8)) };
-let KEY = null, DATA = null, META = null;
+let KEY = null, DATA = null, META = null, RAW = null;
 async function deriveRaw(password, meta) {
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: b64.dec(meta.salt), iterations: meta.iter, hash: 'SHA-256' }, base, 256);
@@ -99,7 +100,7 @@ async function unlock(raw) {
   const buf = await fetch('data/bundle.bin?v=' + META.version).then(r => { if (!r.ok) throw new Error('fetch'); return r.arrayBuffer(); });
   const plainBuf = await decryptBuf(key, buf); // throws on wrong password (GCM auth)
   DATA = JSON.parse(new TextDecoder().decode(await gunzip(plainBuf)));
-  KEY = key;
+  KEY = key; RAW = raw;
 }
 
 async function boot() {
@@ -149,8 +150,56 @@ const isDark = () => document.documentElement.dataset.theme === 'dark' || (!docu
 
 async function start() {
   for (let i = 0; i < 100 && !window.katex; i++) await new Promise(r => setTimeout(r, 50));
+  if (!store.get('email')) return renderEmailGate();
+  flushLog();
   window.addEventListener('hashchange', route);
   route();
+}
+// ---- usage log on Trevor's Mac mini (who uses the site); failures are silent
+let tokenPromise = null;
+function accessToken() {
+  return tokenPromise || (tokenPromise = crypto.subtle.digest('SHA-256', new TextEncoder().encode('trevors-academy|' + b64.enc(RAW)))
+    .then(h => [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('')));
+}
+const serverUrl = () => DATA && DATA.server && DATA.server.url;
+// events queue on the device until Trevor's server is reachable, so no sign-in is lost
+async function logUsage(event, course = '', detail = '') {
+  const email = store.get('email'); if (!email) return;
+  const q = store.get('logq', []); q.push({ email, event, course, detail, at: new Date().toISOString() }); store.set('logq', q.slice(-200));
+  flushLog();
+}
+let flushing = false;
+async function flushLog() {
+  if (flushing || !serverUrl() || !RAW || !(DATA.server && DATA.server.live)) return;
+  flushing = true;
+  try {
+    const tok = await accessToken();
+    for (let q = store.get('logq', []); q.length; q = store.get('logq', [])) {
+      const ev = q[0];
+      const r = await fetch(serverUrl() + '/api/log', { method: 'POST', headers: { 'content-type': 'application/json', 'x-academy-token': tok }, body: JSON.stringify({ ...ev, detail: (ev.detail ? ev.detail + ' · ' : '') + 'at ' + ev.at }) });
+      if (!r.ok && r.status !== 400) break;
+      store.set('logq', store.get('logq', []).slice(1));
+    }
+  } catch { } finally { flushing = false; }
+}
+function logVisit(cid) {
+  const k = 'visit:' + new Date().toISOString().slice(0, 10) + ':' + cid;
+  if (store.get(k)) return; store.set(k, 1); logUsage('visit', cid);
+}
+function renderEmailGate(msg = '') {
+  app.innerHTML = `<div class="login"><div class="login-card">${CREST}
+    <h1>One more step</h1><p>Enter your email to continue. Trevor uses it only to see who's studying with the site.</p>
+    <form id="ef"><input class="field" id="em" type="email" autocomplete="email" placeholder="you@georgetown.edu" aria-label="Email" required>
+      <div class="login-err" id="eerr">${esc(msg)}</div>
+      <button class="btn big" type="submit">Continue ${icon('next')}</button></form>
+    <p class="small muted" style="margin-top:14px">Saved on this device only, so you won't be asked again.</p></div></div>`;
+  setTimeout(() => $('#em')?.focus(), 50);
+  $('#ef').onsubmit = e => {
+    e.preventDefault();
+    const v = $('#em').value.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) { $('#eerr').textContent = 'That doesn\'t look like an email address.'; return; }
+    store.set('email', v); logUsage('signin'); start();
+  };
 }
 
 // ============================================================ course data helpers
@@ -259,6 +308,7 @@ function shell(c, crumbParts, inner) {
       <nav class="crumbs">${crumbs(crumbParts || [])}</nav>
       <div class="top-actions">
         ${c ? `<a class="btn ghost sm" href="#/${c.id}/exams" title="Practice exams">${icon('clock')}<span class="lbl">Exams</span></a>
+        <button class="btn ghost sm" id="fxBtn" title="Formulas for this section">${icon('sigma')}<span class="lbl">Formulas</span></button>
         <a class="btn ghost sm" href="#/${c.id}/cheatsheet" title="${esc(c.sheetLabel || 'Cheat sheet')}">${icon('sheet')}<span class="lbl">${esc(c.sheetLabel || 'Cheat sheet')}</span></a>` : ''}
         <button class="icon-btn" id="themeBtn" title="Toggle dark mode" aria-label="Toggle dark mode">${icon(themeIcon)}</button>
         <button class="icon-btn" id="setBtn" title="Settings" aria-label="Settings">${icon('gear')}</button>
@@ -266,6 +316,8 @@ function shell(c, crumbParts, inner) {
     <main id="view">${inner}</main>`;
   $('#themeBtn').onclick = () => { settings.theme = isDark() ? 'light' : 'dark'; saveSettings(); applyTheme(); $('#themeBtn').innerHTML = icon(isDark() ? 'sun' : 'moon'); };
   $('#setBtn').onclick = () => openSettings(c);
+  if ($('#fxBtn')) $('#fxBtn').onclick = () => ($('#fx') ? closeFormulas() : openFormulas(c));
+  if ($("#fx")) { if (c) openFormulas(c, true); else closeFormulas(); } // keep the window open across pages, refreshed for the new section
   window.scrollTo(0, 0);
 }
 function sideNav(c, activeUnit) {
@@ -290,7 +342,7 @@ function route() {
   if (!c) return viewHome();
   if (c.status !== 'live' || !c.units) return viewComingSoon(c);
   const [, kind, id] = parts;
-  P(c.id).last = location.hash; saveP(c.id);
+  P(c.id).last = location.hash; saveP(c.id); logVisit(c.id);
   switch (kind) {
     case undefined: return viewCourse(c);
     case 'unit': return viewUnit(c, id);
@@ -1229,15 +1281,16 @@ function viewCheatsheet(c) {
 
 
 // ============================================================ AI tutor (Claude via the Anthropic JS SDK)
+const serverLive = () => !!(DATA && DATA.server && DATA.server.live);
+const tutorOn = () => serverLive() || !!(DATA && DATA.tutor && DATA.tutor.key);
+// ---- direct mode (until the Mac mini server is reachable): Anthropic JS SDK in the browser
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@0.129.0/+esm';
 let sdkPromise = null, tutorClient = null;
-const tutorOn = () => !!(DATA && DATA.tutor && DATA.tutor.key);
 async function getTutorClient() {
   if (tutorClient) return tutorClient;
   sdkPromise = sdkPromise || import(SDK_URL);
   const mod = await sdkPromise; const Anthropic = mod.default || mod.Anthropic;
-  tutorClient = new Anthropic({ apiKey: DATA.tutor.key, dangerouslyAllowBrowser: true });
-  return tutorClient;
+  return (tutorClient = new Anthropic({ apiKey: DATA.tutor.key, dangerouslyAllowBrowser: true }));
 }
 const unitCtxCache = {};
 function unitContext(c, u) {
@@ -1255,13 +1308,27 @@ function tutorSystem(c, u) {
   return `You are the tutor inside Trevor's Academy, a one-day cram course for ${c.code} ${c.title} (${c.school || ''}). The final exam is ${c.exam?.dates || 'soon'}; format: ${c.exam?.questions || ''}; ${c.exam?.rule || ''}.
 How to tutor:
 - Teach like a great TA the night before the exam: short, clear, exam-focused. Lead with the direct answer or next step, then the why. Usually under 180 words unless asked for more.
-- Use the course's own notation, conventions and wording from the material below${c.id === 'gfi' ? ' (this exam re-uses the professor\'s slide wording, so quote it when it matters)' : ''}. If something isn't covered in the material, say so and give the standard textbook view briefly.
+- Use the course's own notation, conventions and wording from the material below${c.id === 'gfi' ? " (this exam re-uses the professor's slide wording, so quote it when it matters)" : ''}. If something isn't covered in the material, say so and give the standard textbook view briefly.
 - Math in LaTeX with \\( ... \\) inline or \\[ ... \\] display (never $). Show calculations step by step with numbers.
 - If the student is asking about a practice question they have NOT attempted yet, do not give the final answer or the correct option: give a hint or the method, and invite them to try.
+- Stay on this course. Politely decline requests unrelated to studying for it.
 - Plain formatting only: short paragraphs, "- " bullets, **bold** for key terms. No headings, no tables.
 
 COURSE MATERIAL FOR THIS UNIT (from the professors' slides, problem sets and the course's lessons):
 ${unitContext(c, u)}`;
+}
+async function streamDirect(c, u, msgs, reply, S) {
+  const client = await getTutorClient();
+  const stream = client.beta.messages.stream({
+    model: DATA.tutor.model, max_tokens: 4000,
+    betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+    output_config: { effort: 'low' },
+    system: [{ type: 'text', text: tutorSystem(c, u), cache_control: { type: 'ephemeral' } }],
+    messages: msgs,
+  }, { signal: S.abort.signal });
+  for await (const ev of stream) if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') { reply.content += ev.delta.text; renderTutorLog(); }
+  const fin = await stream.finalMessage();
+  if (fin.stop_reason === 'refusal' && !reply.content) reply.content = "I can't help with that one. Try rephrasing it as a question about the course material.";
 }
 function mdLite(t) {
   const out = []; let list = [];
@@ -1336,29 +1403,76 @@ async function askTutor(c, u, text) {
   const reply = { role: 'assistant', content: '' }; S.msgs.push(reply); S.busy = true; renderTutorLog();
   $('#tsend') && ($('#tsend').disabled = true);
   try {
-    const client = await getTutorClient();
     S.abort = new AbortController();
-    const stream = client.beta.messages.stream({
-      model: DATA.tutor.model, max_tokens: 4000,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      output_config: { effort: 'low' },
-      system: [{ type: 'text', text: tutorSystem(c, u), cache_control: { type: 'ephemeral' } }],
-      messages: S.msgs.filter(m => m !== reply).map(m => ({ role: m.role, content: m.content })),
-    }, { signal: S.abort.signal });
-    for await (const ev of stream) {
-      if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') { reply.content += ev.delta.text; renderTutorLog(); }
+    if (!serverLive()) { await streamDirect(c, u, S.msgs.filter(m => m !== reply).map(m => ({ role: m.role, content: m.content })), reply, S); if (!reply.content) reply.content = 'Sorry, I came back empty. Try asking again.'; return; }
+    const r = await fetch(serverUrl() + '/api/tutor', { method: 'POST', signal: S.abort.signal, headers: { 'content-type': 'application/json', 'x-academy-token': await accessToken() },
+      body: JSON.stringify({ email: store.get('email'), course: c.id, unit: u.id, messages: S.msgs.filter(m => m !== reply).map(m => ({ role: m.role, content: m.content })) }) });
+    if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch { } const err = new Error(m || 'HTTP ' + r.status); err.status = r.status; err.friendly = m; throw err; }
+    const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+        const ev = (chunk.match(/^event: (.*)$/m) || [])[1], data = (chunk.match(/^data: (.*)$/m) || [])[1];
+        if (!ev || data == null) continue;
+        const d = JSON.parse(data);
+        if (ev === 'text') { reply.content += d; renderTutorLog(); }
+        else if (ev === 'error') { const err = new Error(d.message); err.status = d.status; err.friendly = d.message; throw err; }
+        else if (ev === 'done' && d.stop === 'refusal' && !reply.content) reply.content = "I can't help with that one. Try rephrasing it as a question about the course material.";
+      }
     }
-    const fin = await stream.finalMessage();
-    if (fin.stop_reason === 'refusal') reply.content = reply.content || "I can't help with that one. Try rephrasing it as a question about the course material.";
     if (!reply.content) reply.content = 'Sorry, I came back empty. Try asking again.';
   } catch (e) {
     if (e.name === 'AbortError' || /abort/i.test(e.message || '')) return;
     const st = e.status;
-    reply.content = st === 401 ? 'The tutor key was rejected (invalid or revoked).' : st === 429 ? 'The tutor is busy (rate or spend limit reached). Try again in a minute.' : st >= 500 ? 'Claude is temporarily unavailable. Try again shortly.' : 'Could not reach the tutor: ' + (e.message || 'network error');
+    reply.content = e.friendly || (st === 401 ? 'The tutor could not verify this site session. Lock and unlock the site in Settings, then try again.' : st >= 500 ? 'The tutor is temporarily unavailable. Try again shortly.' : "Couldn't reach the tutor (Trevor's server may be offline). Try again later.");
   } finally {
     S.busy = false; $('#tsend') && ($('#tsend').disabled = false); renderTutorLog();
   }
 }
+
+// ============================================================ formulas window
+function currentUnit(c) {
+  const parts = location.hash.replace(/^#\/?/, '').split('/');
+  const [, kind, id] = parts;
+  if (kind === 'unit' || kind === 'quiz') return c.units.find(u => u.id === id) || null;
+  if (kind === 'learn' || kind === 'practice') return findLesson(c, id).u || null;
+  return null;
+}
+function fxItems(u) {
+  const f = (u.keyFormulas || []).map(k => `<div class="fx-item" data-s="${esc((k.name + ' ' + (k.note || '') + ' ' + k.tex).toLowerCase())}"><div class="fx-name">${tex(esc(k.name))}</div><div class="fx-tex">${texBlock(k.tex)}</div>${k.note ? `<div class="fx-note">${tex(k.note)}</div>` : ''}</div>`).join('');
+  const facts = (u.keyFacts || []).map(k => `<li class="fx-fact" data-s="${esc(plain(k).toLowerCase())}">${tex(k)}</li>`).join('');
+  return f ? f + (facts ? `<details class="fx-facts"><summary>Must-know facts (${u.keyFacts.length})</summary><ul>${facts}</ul></details>` : '')
+    : (facts ? `<div class="muted small" style="margin:2px 0 6px">No formulas in this unit. Here's its must-know list:</div><ul class="fx-factlist">${facts}</ul>` : '<div class="muted small">Nothing listed for this unit.</div>');
+}
+function closeFormulas() { $('#fx')?.remove(); $('#fxBtn')?.classList.remove('on'); }
+function openFormulas(c, refresh = false) {
+  const cur = currentUnit(c);
+  let d = $('#fx');
+  const q = d ? ($('#fxq')?.value || '') : '';
+  if (!d) { d = document.createElement('aside'); d.id = 'fx'; d.className = 'fx'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Formulas'); document.body.appendChild(d); }
+  const others = c.units.filter(u => u !== cur);
+  d.innerHTML = `<div class="fx-head">${icon('sigma')}<b>Formulas</b><span class="spacer"></span><button class="icon-btn" id="fxClose" aria-label="Close">${icon('x')}</button></div>
+    <div class="fx-search"><input class="field" id="fxq" placeholder="Search formulas (e.g. Sharpe, duration, leverage)" value="${esc(q)}"></div>
+    <div class="fx-body" id="fxBody">
+      ${cur ? `<section class="fx-sec cur"><div class="fx-sh" style="--c:${unitColor(cur)}">This section · Unit ${cur.num}: ${esc(cur.title)}</div>${fxItems(cur)}</section>` : `<div class="muted small" style="padding:4px 2px 10px">Open a unit or lesson to see its formulas at the top. All units are below.</div>`}
+      <div class="fx-sh small-sh">${cur ? 'Other units' : 'All units'}</div>
+      ${others.map(u => `<details class="fx-unit"><summary><span class="num" style="background:${unitColor(u)}">${u.num}</span>${esc(u.title)} <span class="muted small">(${(u.keyFormulas || []).length || (u.keyFacts || []).length + ' facts'}${(u.keyFormulas || []).length ? ' formulas' : ''})</span></summary>${fxItems(u)}</details>`).join('')}
+    </div>`;
+  $('#fxBtn')?.classList.add('on');
+  $('#fxClose').onclick = closeFormulas;
+  const filter = () => {
+    const t = $('#fxq').value.trim().toLowerCase();
+    $$('#fxBody .fx-item, #fxBody .fx-fact').forEach(el => { el.style.display = !t || el.dataset.s.includes(t) ? '' : 'none'; });
+    $$('#fxBody details').forEach(det => { const hit = t && det.querySelector('.fx-item:not([style*="none"]), .fx-fact:not([style*="none"])'); if (t) det.open = !!hit; det.style.display = t && !hit ? 'none' : ''; });
+    $$('#fxBody .fx-sec.cur').forEach(sec => { sec.style.display = t && !sec.querySelector('.fx-item:not([style*="none"]), .fx-fact:not([style*="none"])') ? 'none' : ''; });
+  };
+  $('#fxq').oninput = filter; if (q) filter();
+  if (!refresh) setTimeout(() => $('#fxq')?.focus(), 30);
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#fx')) closeFormulas(); });
 
 // ============================================================ settings
 function openSettings(c) {
@@ -1372,6 +1486,7 @@ function openSettings(c) {
     <div class="setting"><div class="lbl">Default narration speed</div><select id="srate">${[0.9, 1, 1.15, 1.25, 1.5, 1.75, 2].map(r => `<option value="${r}" ${+settings.rate === r ? 'selected' : ''}>${r}×</option>`).join('')}</select></div>
     <div class="setting"><label class="switch"><input type="checkbox" id="sauto" ${settings.autoAdvance ? 'checked' : ''}> Auto-advance slides after narration</label></div>
     ${c ? `<div class="setting"><div class="lbl">Progress</div><button class="btn secondary sm" id="sreset" style="justify-self:start">${icon('redo')} Reset my ${esc(c.code)} progress</button></div>` : ''}
+    <div class="setting"><div class="lbl">Signed in as</div><div class="row"><span>${esc(store.get('email') || '—')}</span><button class="btn ghost sm" id="semail">Change email</button></div></div>
     <div class="setting"><button class="btn ghost sm" id="slock" style="justify-self:start">${icon('logout')} Lock this device (forget password)</button></div></div>`;
   document.body.appendChild(back);
   const close = () => back.remove();
@@ -1385,6 +1500,7 @@ function openSettings(c) {
   $('#sauto', back).onchange = e => { settings.autoAdvance = e.target.checked; saveSettings(); };
   if ($('#sreset', back)) $('#sreset', back).onclick = () => { if (confirm(`Reset all ${c.code} progress on this device? This can't be undone.`)) { store.del('p:' + c.id); store.del('exam:' + c.id); c.exams.forEach(x => store.del(examKey(c, x.id))); delete progCache[c.id]; close(); route(); toast('Progress reset'); } };
   $('#slock', back).onclick = () => { store.del('key'); location.reload(); };
+  $('#semail', back).onclick = () => { store.del('email'); close(); cleanups.forEach(f => { try { f(); } catch { } }); cleanups = []; renderEmailGate(); };
   const onEsc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); } };
   document.addEventListener('keydown', onEsc);
 }

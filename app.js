@@ -1007,7 +1007,38 @@ function cheatData(c) {
   if (c.cheatsheet && (c.cheatsheet.sections || []).length) return c.cheatsheet;
   return { title: `${c.code} cheat sheet`, sections: c.units.map(u => ({ title: `${u.num}. ${u.title}`, items: [...(u.keyFormulas || []).map(k => ({ name: k.name, tex: k.tex, note: k.note })), ...(u.keyFacts || []).map(f => ({ html: f }))] })).filter(s => s.items.length) };
 }
+// encrypted course files (sheet PDF / page images) → object URLs
+const fileCache = new Map();
+function fileUrl(hash, type) {
+  if (!fileCache.has(hash)) {
+    const p = fetch(`files/${hash}.bin`).then(r => { if (!r.ok) throw new Error('file'); return r.arrayBuffer(); })
+      .then(b => decryptBuf(KEY, b)).then(pl => URL.createObjectURL(new Blob([pl], { type })));
+    p.catch(() => fileCache.delete(hash)); fileCache.set(hash, p);
+  }
+  return fileCache.get(hash);
+}
+function viewSheet(c) {
+  const sh = c.sheet, label = c.sheetLabel || 'Cheat sheet';
+  const fname = `${c.code} ${c.title} - ${label}.pdf`;
+  shell(c, [[c.code, `#/${c.id}`], [label]], `<div class="page">
+    <div class="cs-toolbar"><div><h1 style="margin:0">${esc(sh.title || label)}</h1>
+      <div class="muted small">${c.exam?.allowed ? esc(c.exam.allowed) + ' · ' : ''}Print it double-sided (flip on the short edge for landscape) and write your name on both sides.</div></div>
+      <span class="spacer"></span>
+      <button class="btn" id="dl">${icon('print')} Download PDF</button>
+      <button class="btn secondary" id="op">${icon('eye')} Open PDF</button></div>
+    <div class="sheet-pages" id="sp">${sh.pages.map((_, i) => `<figure class="sheet-page ${sh.orientation}"><div class="spinner"></div><figcaption>Side ${i + 1} of ${sh.pages.length}</figcaption></figure>`).join('')}</div>
+    <p class="small muted" style="margin-top:12px">Tip: click a page to open it full size. The PDF prints at exactly two pages on US Letter; choose "Actual size" (not "Fit") in the print dialog.</p>
+    ${footer()}</div>`);
+  sh.pages.forEach((h, i) => fileUrl(h, 'image/png').then(u => {
+    const fig = $$('#sp figure')[i]; if (!fig) return;
+    fig.innerHTML = `<a href="${u}" target="_blank" rel="noopener"><img alt="${esc(label)} side ${i + 1}" src="${u}"></a><figcaption>Side ${i + 1} of ${sh.pages.length}</figcaption>`;
+  }).catch(() => toast('Could not load the sheet image')));
+  const getPdf = () => fileUrl(sh.pdf, 'application/pdf');
+  $('#dl').onclick = () => getPdf().then(u => { const a = document.createElement('a'); a.href = u; a.download = fname; document.body.appendChild(a); a.click(); a.remove(); }).catch(() => toast('Download failed'));
+  $('#op').onclick = () => getPdf().then(u => window.open(u, '_blank', 'noopener')).catch(() => toast('Could not open the PDF'));
+}
 function viewCheatsheet(c) {
+  if (c.sheet && (c.sheet.pages || []).length) return viewSheet(c);
   const d = cheatData(c);
   const size = store.get('cs-size:' + c.id, 8.2);
   const secs = d.sections.map(s => `<div class="cs-sec"><h4>${tex(esc(s.title))}</h4>${s.items.map(it => `<div class="cs-item">${it.name ? `<span class="n">${tex(esc(it.name))}</span> ` : ''}${it.tex ? `<div class="t">${texBlock(it.tex)}</div>` : ''}${it.html ? tex(it.html) : ''}${it.note ? `<div class="note">${tex(it.note)}</div>` : ''}</div>`).join('')}</div>`).join('');

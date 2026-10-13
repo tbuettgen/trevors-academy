@@ -1,0 +1,48 @@
+/* Trevor's Academy — print cheat-sheet design system (shared by the app and tools/render-cheatsheet.mjs).
+   Everything is scoped under .csx. Variables are set per sheet: --cs-font, --cs-pt, --cs-lh, --cs-cols. */
+.csx { --c: #041e42; --cs-gap: 0.11in; font-family: var(--cs-font, "Roboto Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif); font-size: var(--cs-pt, 7pt); line-height: var(--cs-lh, 1.16); color: #000; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; text-align: left; }
+.csx * { box-sizing: border-box; }
+.csx-cols { column-count: var(--cs-cols, 4); column-gap: var(--cs-gap); column-fill: auto; column-rule: 0.4pt solid #c8ccd4; }
+.csx p { margin: 0 0 1pt; }
+.csx b, .csx strong { font-weight: 800; }
+
+/* section = one topic, colored band header */
+.csx-sec { margin: 0 0 2.2pt; }
+.csx-h { break-after: avoid; break-inside: avoid; font-weight: 800; font-size: 1.12em; letter-spacing: .01em; color: #fff; background: var(--c); padding: 0.4pt 3pt 0.6pt; border-radius: 1.6pt; margin: 1.4pt 0 1.2pt; }
+.csx-h small { font-weight: 600; opacity: .85; font-size: .82em; margin-left: 3pt; }
+.csx-sub { break-after: avoid; font-weight: 800; color: var(--c); border-bottom: 0.5pt solid var(--c); margin: 1.6pt 0 0.8pt; padding-bottom: 0.2pt; }
+
+/* formula row: label, math, note */
+.csx-f { break-inside: avoid; margin: 0.5pt 0; }
+.csx-f > b:first-child { color: var(--c); }
+.csx-n { color: #333; font-size: .92em; }
+.csx-d { display: block; text-align: center; margin: 0.4pt 0; }
+
+/* compact tables */
+.csx-t { border-collapse: collapse; width: 100%; break-inside: avoid; margin: 0.8pt 0 1.2pt; font-size: .96em; }
+.csx-t th, .csx-t td { border: 0.4pt solid #9aa2b1; padding: 0.2pt 1.4pt; vertical-align: top; }
+.csx-t th { background: #e8ecf3; font-weight: 800; text-align: left; }
+.csx-t td.c, .csx-t th.c { text-align: center; }
+.csx-t td.r { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* callouts */
+.csx-box { break-inside: avoid; border: 0.6pt solid var(--c); border-radius: 1.8pt; padding: 0.8pt 2pt; margin: 1pt 0; }
+.csx-trap { color: #b00020; font-weight: 700; }
+.csx-trap::before { content: "⚠ "; }
+.csx-tip { color: #0b6b3a; font-weight: 700; }
+.csx-ex { break-inside: avoid; background: #f3f5f9; border-left: 1.4pt solid var(--c); padding: 0.6pt 2pt; margin: 1pt 0; }
+.csx-tf { break-inside: avoid; margin: 0.4pt 0; }
+.csx-tf .T, .csx-tf .F { display: inline-block; min-width: 1.2em; text-align: center; font-weight: 800; border-radius: 1.4pt; color: #fff; padding: 0 1pt; margin-right: 2pt; }
+.csx-tf .T { background: #0b6b3a; }
+.csx-tf .F { background: #b00020; }
+
+/* lists */
+.csx ul, .csx ol { margin: 0 0 1pt; padding-left: 1.05em; }
+.csx li { margin: 0; }
+.csx .two { column-count: 2; column-gap: 4pt; column-rule: none; }
+
+/* math */
+.csx .katex { font-size: 1.04em; }
+.csx .katex-display { margin: 0.3pt 0; overflow: hidden; }
+.csx .katex-display > .katex { font-size: 1.04em; }
+.csx svg { max-width: 100%; height: auto; display: block; }
